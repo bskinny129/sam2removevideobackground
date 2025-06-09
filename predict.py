@@ -39,224 +39,129 @@ class Predictor(BasePredictor):
 
         logging.info("Setup completed")
 
-    def predict(
-            self,
-            input_video: Path = Input(description="Input video file"),
-            bg_color: str = Input(description="Background color (hex code)", default="#00FF00")
-    ) -> Path:
-        bg_color = tuple(int(bg_color.lstrip('#')[i:i + 2], 16) for i in (0, 2, 4))[::-1]  # BGR for OpenCV
+    def detect_body_keypoints(self, frame):
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img_tensor = F.to_tensor(frame_rgb).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            prediction = self.body_detector(img_tensor)[0]
 
+        if len(prediction['boxes']) > 0:
+            best_box = prediction['boxes'][prediction['scores'].argmax()].cpu().numpy()
+            x1, y1, x2, y2 = best_box
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+            w, h = x2 - x1, y2 - y1
+            dx, dy = w * 0.2, h * 0.2
+            pts = np.array([
+                [cx, cy],
+                [cx - dx, cy],
+                [cx + dx, cy],
+                [cx, cy - dy],
+                [cx, cy + dy],
+            ], dtype=np.float32)
+            pts[:, 0] = np.clip(pts[:, 0], x1, x2)
+            pts[:, 1] = np.clip(pts[:, 1], y1, y2)
+            return pts
+        else:
+            h, w = frame.shape[:2]
+            ctr = np.array([[w // 2, h // 2]], dtype=np.float32)
+            return np.tile(ctr, (5, 1))
+
+    def compute_alpha(self, frame, mask_logits):
+        # Binary mask interior
+        mask_bin = (mask_logits.squeeze() > 0).astype(np.uint8)
+        # Hair-edge region
+        kernel = np.ones((5, 5), np.uint8)
+        dilated = cv2.dilate(mask_bin * 255, kernel, iterations=2) // 255
+        hair_edge = ((dilated - mask_bin) > 0).astype(np.uint8)
+
+        # Background color sample: mean of pixels outside dilated mask
+        bg_samples = frame[dilated == 0]
+        if bg_samples.size:
+            bg_avg = bg_samples.mean(axis=0)
+        else:
+            bg_avg = frame.reshape(-1, 3).mean(axis=0)
+
+        # Color distance map
+        diff = frame.astype(np.float32) - bg_avg
+        color_dist = np.linalg.norm(diff, axis=2)
+        cd_min, cd_max = color_dist.min(), color_dist.max()
+        norm_cd = (color_dist - cd_min) / (cd_max - cd_min + 1e-8)
+
+        # Hair-edge alpha from normalized color distance
+        hair_alpha = hair_edge.astype(np.float32) * norm_cd
+
+        # Final alpha: interior fully opaque + hair-edge partial
+        alpha = mask_bin.astype(np.float32) + hair_alpha
+        alpha = np.clip(alpha, 0.0, 1.0)
+        return (alpha * 255).astype(np.uint8)
+
+    def predict(
+        self,
+        input_video: Path = Input(description="Input video file"),
+    ) -> Path:
         frames_dir = "/frames"
         if os.path.exists(frames_dir):
             shutil.rmtree(frames_dir)
         os.makedirs(frames_dir, exist_ok=True)
 
-        logging.info(f"Input video path: {input_video}")
-        logging.info(f"Input video exists: {os.path.exists(input_video)}")
-        logging.info(f"Input video file size: {os.path.getsize(input_video)} bytes")
+        logging.info(f"Extracting frames from {input_video}")
+        subprocess.run([
+            "ffmpeg", "-i", str(input_video),
+            "-q:v", "2", "-start_number", "0",
+            f"{frames_dir}/%05d.jpg"
+        ], check=True)
 
-        try:
-            ffmpeg_cmd = [
-                "ffmpeg", "-i", str(input_video), "-q:v", "2", "-start_number", "0",
-                f"{frames_dir}/%05d.jpg"
-            ]
-            logging.info(f"Running FFmpeg command: {' '.join(ffmpeg_cmd)}")
-
-            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, check=True)
-            logging.info("FFmpeg command executed successfully")
-            logging.debug(f"FFmpeg stdout: {result.stdout}")
-            logging.debug(f"FFmpeg stderr: {result.stderr}")
-        except subprocess.CalledProcessError as e:
-            logging.error(f"FFmpeg command failed: {e.stderr}")
-            raise RuntimeError(f"Failed to extract frames from video: {e.stderr}")
-
-        frame_names = [p for p in os.listdir(frames_dir) if p.endswith(('.jpg', '.jpeg', '.JPG', '.JPEG'))]
-        logging.info(f"Number of frames extracted: {len(frame_names)}")
-
+        frame_names = sorted(f for f in os.listdir(frames_dir) if f.endswith(".jpg"))
         if not frame_names:
-            logging.error(f"No frames were extracted. Contents of {frames_dir}: {os.listdir(frames_dir)}")
-            raise RuntimeError(
-                f"No frames were extracted from the video. The video file may be corrupt or in an unsupported format.")
+            raise RuntimeError("No frames extracted")
 
-        frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
+        # Initialize SAM2 inference
+        state = self.predictor.init_state(video_path=frames_dir)
+        first = cv2.imread(os.path.join(frames_dir, frame_names[0]))
+        kps = self.detect_body_keypoints(first)
+        _, obj_ids, _ = self.predictor.add_new_points(
+            inference_state=state,
+            frame_idx=0,
+            obj_id=1,
+            points=kps,
+            labels=np.ones(len(kps), dtype=np.int32),
+        )
 
-        try:
-            inference_state = self.predictor.init_state(video_path=frames_dir)
-            logging.info("Inference state initialized successfully")
-        except Exception as e:
-            logging.exception(f"Error initializing inference state: {e}")
-            raise
+        video_masks = {}
+        for idx, out_ids, logits in self.predictor.propagate_in_video(state):
+            video_masks[idx] = {oid: logits[i].cpu().numpy() for i, oid in enumerate(out_ids)}
 
-        first_frame_path = os.path.join(frames_dir, frame_names[0])
-        logging.info(f"Attempting to read first frame: {first_frame_path}")
-        first_frame = cv2.imread(first_frame_path)
-        if first_frame is None:
-            logging.error(f"Failed to read the first frame. File exists: {os.path.exists(first_frame_path)}")
-            raise RuntimeError(f"Failed to read the first frame: {frame_names[0]}")
+        rgba_dir = "/rgba_frames"
+        if os.path.exists(rgba_dir):
+            shutil.rmtree(rgba_dir)
+        os.makedirs(rgba_dir, exist_ok=True)
 
-        # Detect body keypoints in the first frame
-        keypoints = self.detect_body_keypoints(first_frame)
-        logging.info(f"Detected {len(keypoints)} keypoints")
+        for i, fname in enumerate(frame_names):
+            frame_path = os.path.join(frames_dir, fname)
+            frame = cv2.imread(frame_path, cv2.IMREAD_COLOR)
+            logits = next(iter(video_masks[i].values()))
 
-        try:
-            _, out_obj_ids, out_mask_logits = self.predictor.add_new_points(
-                inference_state=inference_state,
-                frame_idx=0,
-                obj_id=1,
-                points=keypoints,
-                labels=np.ones(len(keypoints), dtype=np.int32),  # All points are positive
-            )
-            logging.info("New points added successfully")
-        except Exception as e:
-            logging.exception(f"Error adding new points: {e}")
-            raise
+            alpha = self.compute_alpha(frame, logits)
+            h, w = frame.shape[:2]
+            alpha_resized = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_NEAREST)
 
-        video_segments = {}
-        try:
-            for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(inference_state):
-                video_segments[out_frame_idx] = {
-                    out_obj_id: out_mask_logits[i].cpu().numpy()
-                    for i, out_obj_id in enumerate(out_obj_ids)
-                }
-            logging.info("Video segments propagated successfully")
-        except Exception as e:
-            logging.exception(f"Error propagating video segments: {e}")
-            raise
+            bgra = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA)
+            bgra[:, :, 3] = alpha_resized
 
-        output_frames_dir = '/output_frames'
-        os.makedirs(output_frames_dir, exist_ok=True)
+            out_png = os.path.join(rgba_dir, f"{i:05d}.png")
+            cv2.imwrite(out_png, bgra)
 
-        frame_count = 0
-        for out_frame_idx in range(len(frame_names)):
-            frame_path = os.path.join(frames_dir, frame_names[out_frame_idx])
-            frame = cv2.imread(frame_path)
+        out_webm = "/output_with_alpha.webm"
+        logging.info("Encoding VP9+alpha WebM…")
+        subprocess.run([
+            "ffmpeg", "-y",
+            "-framerate", "30",
+            "-i", f"{rgba_dir}/%05d.png",
+            "-c:v", "libvpx-vp9",
+            "-pix_fmt", "yuva420p",
+            "-auto-alt-ref", "0",
+            out_webm
+        ], check=True)
 
-            if frame is None:
-                logging.error(f"Failed to read frame: {frame_path}")
-                continue
-
-            for out_obj_id, out_mask in video_segments[out_frame_idx].items():
-                frame_with_bg_removed = self.remove_background(frame, out_mask, bg_color)
-
-            output_frame_path = os.path.join(output_frames_dir, f"{out_frame_idx:05d}.jpg")
-            cv2.imwrite(output_frame_path, frame_with_bg_removed)
-            frame_count += 1
-
-        output_video_path = '/output.mp4'
-
-        try:
-            final_video_cmd = [
-                "ffmpeg", "-y",  # Add -y flag to force overwrite without prompting
-                "-framerate", "30",
-                "-i", f"{output_frames_dir}/%05d.jpg",
-                "-c:v", "libx264",
-                "-pix_fmt", "yuv420p",
-                output_video_path
-            ]
-            logging.info(f"Running final FFmpeg command: {' '.join(final_video_cmd)}")
-
-            result = subprocess.run(final_video_cmd, capture_output=True, text=True, check=True)
-            logging.info("Final video created successfully")
-            logging.debug(f"Final FFmpeg stdout: {result.stdout}")
-            logging.debug(f"Final FFmpeg stderr: {result.stderr}")
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Error creating final video: {e.stderr}")
-            raise RuntimeError(f"Failed to create final video: {e.stderr}")
-
-        logging.info(f"Processed {frame_count} frames")
-        logging.info(f"Background removed video saved as {output_video_path}")
-
-        return Path(output_video_path)
-
-    def detect_body_keypoints(self, frame):
-        # Convert BGR to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        # Convert to tensor
-        img_tensor = F.to_tensor(frame_rgb).unsqueeze(0).to(self.device)
-
-        with torch.no_grad():
-            prediction = self.body_detector(img_tensor)[0]
-
-        # Get the bounding box with the highest score
-        if len(prediction['boxes']) > 0:
-            best_box = prediction['boxes'][prediction['scores'].argmax()].cpu().numpy()
-            x1, y1, x2, y2 = best_box
-
-            # Calculate center of the bounding box
-            center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
-
-            # Calculate the dimensions of the bounding box
-            width, height = x2 - x1, y2 - y1
-
-            # Define offset for surrounding points (20% of width/height)
-            offset_x, offset_y = width * 0.2, height * 0.2
-
-            # Define keypoints
-            keypoints = np.array([
-                [center_x, center_y],  # Center
-                [center_x - offset_x, center_y],  # Left
-                [center_x + offset_x, center_y],  # Right
-                [center_x, center_y - offset_y],  # Top
-                [center_x, center_y + offset_y],  # Bottom
-            ], dtype=np.float32)
-
-            # Ensure all points are within the bounding box
-            keypoints[:, 0] = np.clip(keypoints[:, 0], x1, x2)
-            keypoints[:, 1] = np.clip(keypoints[:, 1], y1, y2)
-
-            return keypoints
-        else:
-            # If no person is detected, fall back to center point
-            height, width = frame.shape[:2]
-            center = np.array([[width // 2, height // 2]], dtype=np.float32)
-            return np.tile(center, (5, 1))  # Return 5 identical center points as fallback
-
-    def remove_background(self, frame, mask, bg_color):
-        mask = mask.squeeze()
-        if mask.dtype == bool:
-            mask = mask.astype(np.uint8) * 255
-        else:
-            mask = (mask > 0).astype(np.uint8) * 255
-
-        mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_NEAREST)
-
-        # Create background
-        bg = np.full(frame.shape, bg_color, dtype=np.uint8)
-
-        # Apply the mask to keep the person and remove the background
-        fg = cv2.bitwise_and(frame, frame, mask=mask)
-        bg = cv2.bitwise_and(bg, bg, mask=cv2.bitwise_not(mask))
-
-        # Combine foreground and background
-        result = cv2.add(fg, bg)
-
-        # Clean up the hair area
-        result = self.clean_hair_area(frame, result, mask, bg_color)
-
-        return result
-
-    def clean_hair_area(self, original, processed, mask, bg_color):
-        # Create a dilated mask to capture the hair edges
-        kernel = np.ones((5, 5), np.uint8)
-        dilated_mask = cv2.dilate(mask, kernel, iterations=2)
-        hair_edge_mask = cv2.subtract(dilated_mask, mask)
-
-        # Calculate the average color of the removed background
-        bg_sample = cv2.bitwise_and(original, original, mask=cv2.bitwise_not(dilated_mask))
-        bg_average = cv2.mean(bg_sample)[:3]
-
-        # Create a color distance map
-        color_distances = np.sqrt(np.sum((original.astype(np.float32) - bg_average) ** 2, axis=2))
-
-        # Normalize color distances
-        color_distances = (color_distances - color_distances.min()) / (color_distances.max() - color_distances.min())
-
-        # Create an alpha mask based on color distance
-        alpha = (1 - color_distances) * (hair_edge_mask / 255.0)
-        alpha = np.clip(alpha, 0, 1)
-
-        # Blend the hair edge area
-        for c in range(3):
-            processed[:, :, c] = processed[:, :, c] * (1 - alpha) + bg_color[c] * alpha
-
-        return processed
+        logging.info(f"Written RGBA WebM (VP9+alpha): {out_webm}")
+        return Path(out_webm)
