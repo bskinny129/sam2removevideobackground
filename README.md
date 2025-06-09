@@ -1,3 +1,8 @@
+# Brian's Update
+
+I want to output the alpha mask as well.
+
+
 # SAM2 Video Background Removal
 
 This project uses the Segment Anything 2 (SAM2) model to remove backgrounds from videos. It's designed to run on Replicate, leveraging GPU acceleration for efficient processing.
