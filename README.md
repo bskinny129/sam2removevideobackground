@@ -1,6 +1,6 @@
 # Brian's Update
 
-I want to output the alpha mask as well.
+I want the output to be a WebM VP9 + alpha video.
 
 
 # SAM2 Video Background Removal
