@@ -1,5 +1,7 @@
 import torch
 import numpy as np
+import tempfile
+import os
 import cv2
 from sam2.build_sam import build_sam2_video_predictor
 from cog import BasePredictor, Input, Path
@@ -64,23 +66,14 @@ class Predictor(BasePredictor):
 
         h, w = frames[0].shape[:2]
 
-        # 2. Build lightweight reader for SAM‑2 (expects RGB)
-        class _Reader:
-            def __init__(self, bgr_frames):
-                self._frames = bgr_frames
-            def __len__(self):
-                return len(self._frames)
-            def __getitem__(self, idx: int):
-                return cv2.cvtColor(self._frames[idx], cv2.COLOR_BGR2RGB)
-        reader = _Reader(frames)
-
-        try:
-            # Newer releases (≥ 0.2)
-            state = self.predictor.init_state(video_reader=reader)
-        except TypeError:
-            # Older releases – SAM‑2 will read the original container by itself
-            logging.info("Falling back to init_state(video_path=…)")
-            state = self.predictor.init_state(video_path=str(input_video))
+        # 2. JPEG dump for SAM‑2
+        tmp_dir = tempfile.mkdtemp(prefix="sam2_frames_")
+        for i, frm in enumerate(frames):
+            cv2.imwrite(os.path.join(tmp_dir, f"{i:06d}.jpg"), frm,
+                        [int(cv2.IMWRITE_JPEG_QUALITY), 94])
+        logging.info(f"Wrote {len(frames)} JPEGs to {tmp_dir}")
+        
+        state = self.predictor.init_state(video_path=tmp_dir)  # guaranteed to work
 
         # 3. Seed keypoints on first frame
         keypoints = self.detect_body_keypoints(frames[0])
