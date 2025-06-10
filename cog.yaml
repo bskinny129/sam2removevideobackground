@@ -23,7 +23,8 @@ build:
       matplotlib==3.7.1 pycocotools==2.0.6 scipy==1.10.1 timm==0.6.13 
       # onnxruntime-gpu==1.15.0 onnx==1.14.0  ← deleted onnx and onnxruntime-gpu
     # Layer 4: Model and config download
-    - wget -q https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/main/sam2.1_hiera_base_plus.pt \
+    - |
+      wget -q https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/main/sam2.1_hiera_base_plus.pt \
            -O /sam2_hiera_base_plus.pt
       wget -q https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/main/sam2.1_hiera_b+.yaml \
            -O /sam2.1_hiera_b+.yaml
