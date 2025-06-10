@@ -34,7 +34,7 @@ class Predictor(BasePredictor):
         self.checkpoint = "/sam2_hiera_base_plus.pt"
         from pathlib import Path
         cfg_path = (Path(__file__).parent / "sam2.1_hiera_b+.yaml").resolve()
-        self.model_cfg = str(cfg_path)
+        self.model_cfg = "/sam2.1_hiera_b+.yaml"
 
         self.predictor = build_sam2_video_predictor(self.model_cfg, self.checkpoint)
         logging.info("SAM2 predictor built successfully")
