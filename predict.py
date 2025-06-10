@@ -104,10 +104,15 @@ class Predictor(BasePredictor):
             shutil.rmtree(frames_dir)
         os.makedirs(frames_dir, exist_ok=True)
 
+        cap = cv2.VideoCapture(str(input_video))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        cap.release()
+        print(f"Detected FPS: {fps}")
+
         logging.info(f"Extracting frames from {input_video}")
         subprocess.run([
             "ffmpeg", "-i", str(input_video),
-            "-q:v", "2", "-start_number", "0",
+            "-q:v", "5", "-start_number", "0",
             f"{frames_dir}/%05d.jpg"
         ], check=True)
 
@@ -155,9 +160,11 @@ class Predictor(BasePredictor):
         logging.info("Encoding VP9+alpha WebM…")
         subprocess.run([
             "ffmpeg", "-y",
-            "-framerate", "30",
+            "-framerate", str(fps),
             "-i", f"{rgba_dir}/%05d.png",
             "-c:v", "libvpx-vp9",
+            "-crf", "19",
+            "-b:v", "0"
             "-pix_fmt", "yuva420p",
             "-auto-alt-ref", "0",
             out_webm
