@@ -197,3 +197,16 @@ class Predictor(BasePredictor):
         # Re‑map 0…255 so that fully‑inside pixels stay opaque
         feathered = np.clip((blurred.astype(np.float32) / 255.0) * 255, 0, 255).astype(np.uint8)
         return feathered
+
+if __name__ == "__main__":
+    from pathlib import Path
+    import sys
+
+    # Simple CLI:  python predict.py /path/to/video.webm 4
+    vid = Path(sys.argv[1])
+    n   = int(sys.argv[2]) if len(sys.argv) > 2 else 2
+
+    p = Predictor()
+    p.setup()
+    out = p.predict(input_video=vid, mask_every_n_frames=n)
+    print("Output:", out)
