@@ -33,8 +33,8 @@ class Predictor(BasePredictor):
             torch.autocast(device_type="cuda", dtype=torch.float16).__enter__()
 
         self.checkpoint = "/sam2_hiera_base_plus.pt"
-        cfg_path = Path(__file__).parent / "sam2.1_hiera_b+.yaml"
-        self.model_cfg = "/sam2.1_hiera_b+.yaml"
+        cfg_path = (Path(__file__).parent / "sam2.1_hiera_b+.yaml").resolve()
+        self.model_cfg = f"file://{cfg_path}"
 
         self.predictor = build_sam2_video_predictor(self.model_cfg, self.checkpoint)
         logging.info("SAM2 predictor built successfully")
