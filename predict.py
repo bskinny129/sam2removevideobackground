@@ -9,7 +9,6 @@ import logging
 import subprocess
 from torchvision.models.detection import fasterrcnn_resnet50_fpn
 from torchvision.transforms import functional as F
-from pathlib import Path
 
 
 class Predictor(BasePredictor):
@@ -33,8 +32,9 @@ class Predictor(BasePredictor):
             torch.autocast(device_type="cuda", dtype=torch.float16).__enter__()
 
         self.checkpoint = "/sam2_hiera_base_plus.pt"
+        from pathlib import Path
         cfg_path = (Path(__file__).parent / "sam2.1_hiera_b+.yaml").resolve()
-        self.model_cfg = f"file://{cfg_path}"
+        self.model_cfg = str(cfg_path)
 
         self.predictor = build_sam2_video_predictor(self.model_cfg, self.checkpoint)
         logging.info("SAM2 predictor built successfully")
