@@ -33,10 +33,10 @@ class Predictor(BasePredictor):
 
         self.checkpoint = "/sam2_hiera_base_plus.pt"
         from pathlib import Path
-        cfg_path = (Path(__file__).parent / "sam2.1_hiera_b+.yaml").resolve()
-        self.model_cfg = "sam2.1_hiera_b+.yaml"
+        repo_cfg_dir = str(Path(__file__).parent.resolve())
+        hydra_searchpath = f"hydra.searchpath=[file://{repo_cfg_dir}]"
 
-        self.predictor = build_sam2_video_predictor(self.model_cfg, self.checkpoint)
+        self.predictor = build_sam2_video_predictor(self.model_cfg, self.checkpoint, hydra_overrides=[hydra_searchpath])
         logging.info("SAM2 predictor built successfully")
 
         # pre‑trained Faster R‑CNN for body detection
