@@ -31,7 +31,7 @@ class Predictor(BasePredictor):
             torch.cuda.empty_cache()
             torch.autocast(device_type="cuda", dtype=torch.float16).__enter__()
 
-        self.checkpoint = "/sam2_hiera_base_plus.pt"
+        self.checkpoint = "sam2_hiera_base_plus.pt"
         self.model_cfg = "sam2.1_hiera_b+.yaml"
 
         self.predictor = build_sam2_video_predictor(self.model_cfg, self.checkpoint)
