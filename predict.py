@@ -74,7 +74,13 @@ class Predictor(BasePredictor):
                 return cv2.cvtColor(self._frames[idx], cv2.COLOR_BGR2RGB)
         reader = _Reader(frames)
 
-        state = self.predictor.init_state(video_reader=reader)
+        try:
+            # Newer releases (≥ 0.2)
+            state = self.predictor.init_state(video_reader=reader)
+        except TypeError:
+            # Older releases – SAM‑2 will read the original container by itself
+            logging.info("Falling back to init_state(video_path=…)")
+            state = self.predictor.init_state(video_path=str(input_video))
 
         # 3. Seed keypoints on first frame
         keypoints = self.detect_body_keypoints(frames[0])
