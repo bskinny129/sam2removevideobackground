@@ -1,16 +1,23 @@
-import os
 import torch
 import numpy as np
 import cv2
 from sam2.build_sam import build_sam2_video_predictor
 from cog import BasePredictor, Input, Path
 import logging
-import shutil
 import subprocess
 from torchvision.models.detection import fasterrcnn_resnet50_fpn
 from torchvision.transforms import functional as F
 
+
 class Predictor(BasePredictor):
+    """
+    Same logic as the original file, **only** tweaked to
+    1. mask every 2 frames (prev‑mask reuse)
+    2. skip the PNG detour
+    3. pipe raw BGRA frames directly into FFmpeg
+    """
+
+    # ─────────────────────────  setup  ────────────────────────────
     def setup(self):
         logging.basicConfig(level=logging.DEBUG)
         logging.info("Starting setup")
@@ -25,160 +32,96 @@ class Predictor(BasePredictor):
         self.checkpoint = "/sam2_hiera_large.pt"
         self.model_cfg = "sam2_hiera_l.yaml"
 
-        try:
-            self.predictor = build_sam2_video_predictor(self.model_cfg, self.checkpoint)
-            logging.info("SAM2 predictor built successfully")
-        except Exception as e:
-            logging.exception(f"Error building SAM2 predictor: {e}")
-            raise
+        self.predictor = build_sam2_video_predictor(self.model_cfg, self.checkpoint)
+        logging.info("SAM2 predictor built successfully")
 
-        # Load a pre-trained Faster R-CNN model for body detection
+        # pre‑trained Faster R‑CNN for body detection
         self.body_detector = fasterrcnn_resnet50_fpn(pretrained=True)
-        self.body_detector.eval()
-        self.body_detector.to(self.device)
-
+        self.body_detector.eval().to(self.device)
         logging.info("Setup completed")
 
+    # ─────────────────────────  predict  ──────────────────────────
     def predict(
-            self,
-            input_video: Path = Input(description="Input video file"),
-            bg_color: str = Input(description="Background color (hex code)", default="#00FF00")
+        self,
+        input_video: Path = Input(description="Input video file"),
+        mask_every_n_frames: int = Input(description="Recompute alpha every N frames",
+                                        default=2, ge=1, le=30),
     ) -> Path:
-        bg_color = tuple(int(bg_color.lstrip('#')[i:i + 2], 16) for i in (0, 2, 4))[::-1]  # BGR for OpenCV
 
-        frames_dir = "/frames"
-        if os.path.exists(frames_dir):
-            shutil.rmtree(frames_dir)
-        os.makedirs(frames_dir, exist_ok=True)
-
-        logging.info(f"Input video path: {input_video}")
-        logging.info(f"Input video exists: {os.path.exists(input_video)}")
-        logging.info(f"Input video file size: {os.path.getsize(input_video)} bytes")
-
+        # 1. Decode clip directly into memory (BGR frames)
         cap = cv2.VideoCapture(str(input_video))
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps == 0 or np.isnan(fps):      # some containers don’t store fps
-            fps = 30
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        frames: list[np.ndarray] = []
+        ok, frm = cap.read()
+        while ok:
+            frames.append(frm)
+            ok, frm = cap.read()
         cap.release()
-        print(f"Detected FPS: {fps}")
+        n_frames = len(frames)
+        if n_frames == 0:
+            raise RuntimeError("No decodable frames in input video")
+        logging.info(f"Loaded {n_frames} frames (fps≈{fps:.2f})")
 
-        try:
-            ffmpeg_cmd = [
-                "ffmpeg", "-i", str(input_video), "-q:v", "2", "-start_number", "0",
-                f"{frames_dir}/%05d.jpg"
-            ]
-            logging.info(f"Running FFmpeg command: {' '.join(ffmpeg_cmd)}")
+        h, w = frames[0].shape[:2]
 
-            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, check=True)
-            logging.info("FFmpeg command executed successfully")
-            logging.debug(f"FFmpeg stdout: {result.stdout}")
-            logging.debug(f"FFmpeg stderr: {result.stderr}")
-        except subprocess.CalledProcessError as e:
-            logging.error(f"FFmpeg command failed: {e.stderr}")
-            raise RuntimeError(f"Failed to extract frames from video: {e.stderr}")
+        # 2. Build lightweight reader for SAM‑2 (expects RGB)
+        class _Reader:
+            def __init__(self, bgr_frames):
+                self._frames = bgr_frames
+            def __len__(self):
+                return len(self._frames)
+            def __getitem__(self, idx: int):
+                return cv2.cvtColor(self._frames[idx], cv2.COLOR_BGR2RGB)
+        reader = _Reader(frames)
 
-        frame_names = [p for p in os.listdir(frames_dir) if p.endswith(('.jpg', '.jpeg', '.JPG', '.JPEG'))]
-        logging.info(f"Number of frames extracted: {len(frame_names)}")
+        state = self.predictor.init_state(video_reader=reader)
 
-        if not frame_names:
-            logging.error(f"No frames were extracted. Contents of {frames_dir}: {os.listdir(frames_dir)}")
-            raise RuntimeError(
-                f"No frames were extracted from the video. The video file may be corrupt or in an unsupported format.")
+        # 3. Seed keypoints on first frame
+        keypoints = self.detect_body_keypoints(frames[0])
+        self.predictor.add_new_points(state, 0, 1, keypoints,
+                                      labels=np.ones(len(keypoints), np.int32))
 
-        frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
+        # 4. Propagate masks (logits) through entire clip
+        video_segments: dict[int, dict[int, np.ndarray]] = {}
+        for fidx, obj_ids, logits in self.predictor.propagate_in_video(state):
+            video_segments[fidx] = {oid: logits[i].cpu().numpy()
+                                    for i, oid in enumerate(obj_ids)}
+        logging.info("Mask propagation complete – streaming to encoder")
 
-        try:
-            inference_state = self.predictor.init_state(video_path=frames_dir)
-            logging.info("Inference state initialized successfully")
-        except Exception as e:
-            logging.exception(f"Error initializing inference state: {e}")
-            raise
+        # 5. Spawn FFmpeg encoder, pipe raw BGRA
+        output_path = "/output.webm"
+        ffmpeg = subprocess.Popen([
+            "ffmpeg", "-y",
+            "-f", "rawvideo", "-pix_fmt", "bgra",
+            "-s", f"{w}x{h}", "-r", str(fps), "-i", "-",
+            "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-auto-alt-ref", "0",
+            "-crf", "19", "-b:v", "0", "-cpu-used", "4", "-row-mt", "1",
+            output_path,
+        ], stdin=subprocess.PIPE)
 
-        first_frame_path = os.path.join(frames_dir, frame_names[0])
-        logging.info(f"Attempting to read first frame: {first_frame_path}")
-        first_frame = cv2.imread(first_frame_path)
-        if first_frame is None:
-            logging.error(f"Failed to read the first frame. File exists: {os.path.exists(first_frame_path)}")
-            raise RuntimeError(f"Failed to read the first frame: {frame_names[0]}")
-
-        # Detect body keypoints in the first frame
-        keypoints = self.detect_body_keypoints(first_frame)
-        logging.info(f"Detected {len(keypoints)} keypoints")
-
-        try:
-            _, out_obj_ids, out_mask_logits = self.predictor.add_new_points(
-                inference_state=inference_state,
-                frame_idx=0,
-                obj_id=1,
-                points=keypoints,
-                labels=np.ones(len(keypoints), dtype=np.int32),  # All points are positive
-            )
-            logging.info("New points added successfully")
-        except Exception as e:
-            logging.exception(f"Error adding new points: {e}")
-            raise
-
-        video_segments = {}
-        try:
-            for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(inference_state):
-                video_segments[out_frame_idx] = {
-                    out_obj_id: out_mask_logits[i].cpu().numpy()
-                    for i, out_obj_id in enumerate(out_obj_ids)
-                }
-            logging.info("Video segments propagated successfully")
-        except Exception as e:
-            logging.exception(f"Error propagating video segments: {e}")
-            raise
-
-        output_frames_dir = '/output_frames'
-        os.makedirs(output_frames_dir, exist_ok=True)
-
+        prev_mask = None
         frame_count = 0
-        for out_frame_idx in range(len(frame_names)):
-            frame_path = os.path.join(frames_dir, frame_names[out_frame_idx])
-            frame = cv2.imread(frame_path)
-
-            if frame is None:
-                logging.error(f"Failed to read frame: {frame_path}")
-                continue
-
-            for out_obj_id, out_mask in video_segments[out_frame_idx].items():
-                frame_with_alpha = self.apply_alpha_mask(frame, out_mask)
-
-            output_frame_path = os.path.join(output_frames_dir, f"{out_frame_idx:05d}.png")
-            cv2.imwrite(output_frame_path, frame_with_alpha)
+        
+        for idx, frame in enumerate(frames):          # use in‑memory frame list
+            if idx % mask_every_n_frames == 0 or prev_mask is None:
+                try:
+                    out_mask = next(iter(video_segments[idx].values()))
+                except (KeyError, StopIteration):
+                    out_mask = prev_mask if prev_mask is not None else np.ones(frame.shape[:2], np.uint8)
+                prev_mask = out_mask
+            else:
+                out_mask = prev_mask
+        
+            bgra = self.apply_alpha_mask(frame, out_mask)
+            ffmpeg.stdin.write(bgra.tobytes())
             frame_count += 1
 
-        output_video_path = '/output.webm'
+        ffmpeg.stdin.close()
+        if ffmpeg.wait() != 0:
+            raise RuntimeError("FFmpeg encoding failed")
 
-        try:
-            final_video_cmd = [
-                "ffmpeg", "-y",  # Add -y flag to force overwrite without prompting
-                "-framerate", str(fps),
-                "-i", f"{output_frames_dir}/%05d.png",
-                "-c:v", "libvpx-vp9",
-                "-pix_fmt", "yuva420p",      # yuva444p is fine too; must include “a”
-                "-auto-alt-ref", "0",        # alpha won’t work if alt‑ref is on
-                "-crf", "19",
-                "-b:v", "0",
-                "-cpu-used", "4",
-                "-row-mt", "1",
-                output_video_path
-            ]
-            logging.info(f"Running final FFmpeg command: {' '.join(final_video_cmd)}")
-
-            result = subprocess.run(final_video_cmd, capture_output=True, text=True, check=True)
-            logging.info("Final video created successfully")
-            logging.debug(f"Final FFmpeg stdout: {result.stdout}")
-            logging.debug(f"Final FFmpeg stderr: {result.stderr}")
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Error creating final video: {e.stderr}")
-            raise RuntimeError(f"Failed to create final video: {e.stderr}")
-
-        logging.info(f"Processed {frame_count} frames")
-        logging.info(f"Background removed video saved as {output_video_path}")
-
-        return Path(output_video_path)
+        logging.info(f"Processed {frame_count} frames → {output_path}")
+        return Path(output_path)
 
     def detect_body_keypoints(self, frame):
         # Convert BGR to RGB
