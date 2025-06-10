@@ -33,6 +33,8 @@ class Predictor(BasePredictor):
 
         self.checkpoint = "/sam2_hiera_base_plus.pt"
         from pathlib import Path
+        cfg_path = (Path(__file__).parent / "sam2.1_hiera_b+.yaml").resolve()
+        self.model_cfg = str(cfg_path)
         repo_cfg_dir = str(Path(__file__).parent.resolve())
         hydra_searchpath = f"hydra.searchpath=[file://{repo_cfg_dir}]"
 
