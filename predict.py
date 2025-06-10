@@ -12,7 +12,11 @@ from torchvision.transforms import functional as F
 
 class Predictor(BasePredictor):
     def setup(self):
-        logging.basicConfig(level=logging.DEBUG)
+        logging.basicConfig(
+            level=logging.DEBUG,
+            stream=sys.stdout,
+            format="%(asctime)s %(levelname)s:%(message)s"
+        )
         logging.info("Starting setup")
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -236,7 +240,7 @@ class Predictor(BasePredictor):
                           interpolation=cv2.INTER_NEAREST)
     
         alpha = (mask * 255).astype(np.uint8)                   # 0/255
-        alpha = self.feather_alpha(alpha)
+        #alpha = self.feather_alpha(alpha)
         # Zero‑out RGB where the subject is absent to avoid colored “ghost” halo
         rgb = cv2.bitwise_and(frame, frame, mask=alpha)
     
