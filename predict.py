@@ -52,6 +52,7 @@ class Predictor(BasePredictor):
                                         default=94, ge=1, le=100),
         crf: int = Input(description="Output webm crf",
                                         default=19, ge=1, le=32),
+        soften_edge: bool = Input(description="Soften the edge a bit", default=True)
     ) -> Path:
 
         # 1. Decode clip directly into memory (BGR frames)
@@ -125,7 +126,7 @@ class Predictor(BasePredictor):
                 mask = prev_mask if prev_mask is not None else np.ones((h, w), np.uint8)
 
             prev_mask = mask
-            bgra = self.apply_alpha_mask(frame, mask)
+            bgra = self.apply_alpha_mask(frame, mask, soften_edge)
             ffmpeg.stdin.write(bgra.tobytes())
 
         ffmpeg.stdin.close()
@@ -182,7 +183,7 @@ class Predictor(BasePredictor):
 
     
     # --- replace remove_background with this helper -----------------
-    def apply_alpha_mask(self, frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    def apply_alpha_mask(self, frame: np.ndarray, mask: np.ndarray, soften_edge: bool) -> np.ndarray:
         """
         Return a 4‑channel BGRA image:
           • RGB channels = original pixels where mask==1, zeros elsewhere  
@@ -193,7 +194,8 @@ class Predictor(BasePredictor):
                           interpolation=cv2.INTER_NEAREST)
     
         alpha = (mask * 255).astype(np.uint8)                   # 0/255
-        alpha = self.feather_alpha(alpha)
+        if soften_edge:
+            alpha = self.feather_alpha(alpha)
         # Zero‑out RGB where the subject is absent to avoid colored “ghost” halo
         rgb = cv2.bitwise_and(frame, frame, mask=alpha)
     
