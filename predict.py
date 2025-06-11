@@ -83,13 +83,30 @@ class Predictor(BasePredictor):
         
         # --- 3) init & seed SAM2 -----------------------------------
         state = self.predictor.init_state(video_path=tmp_dir)
-        keypoints = self.detect_body_keypoints(frames[0])
+        # 1) get your five foreground keypoints
+        fg_pts = self.detect_body_keypoints(frames[0])        # shape (5,2), labels=1
+        
+        # 2) pick only the two top corners of the full frame for negative points
+        h, w = frames[0].shape[:2]
+        bg_pts = np.array([
+            [0,    0],     # absolute top-left
+            [w-1,  0],     # absolute top-right
+        ], dtype=np.float32)                              # labels=0
+        
+        # 3) stack and label
+        pts    = np.vstack([fg_pts,  bg_pts])             # (7,2)
+        labels = np.concatenate([
+            np.ones(len(fg_pts), dtype=np.int32),
+            np.zeros(len(bg_pts), dtype=np.int32),
+        ])
+        
+        # 4) seed SAM-2 with your mixed prompt
         self.predictor.add_new_points(
-            state,              # sampler state
-            0,                  # frame index in the sampled sequence
-            1,                  # object id
-            keypoints,
-            labels=np.ones(len(keypoints), np.int32),
+            state,
+            frame_idx=0,
+            obj_id=1,
+            points=pts,
+            labels=labels,
         )
 
         prop_iter = iter(self.predictor.propagate_in_video(state))
