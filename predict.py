@@ -75,80 +75,65 @@ class Predictor(BasePredictor):
         # build a list of “sampled” frame indices
         sampled_idxs = list(range(0, n_frames, mask_every_n_frames))
         for j, orig_idx in enumerate(sampled_idxs):
-            frm = frames[orig_idx]
-            cv2.imwrite(os.path.join(tmp_dir, f"{j:06d}.jpg"), frm,
-                        [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
+            quality = 100 if j == 0 else jpeg_quality # do first frame 100 quality
+            cv2.imwrite(os.path.join(tmp_dir, f"{j:06d}.jpg"), frames[orig_idx],
+                        [int(cv2.IMWRITE_JPEG_QUALITY), quality])
         logging.info(f"Wrote {len(sampled_idxs)} JPEGs to {tmp_dir}")
         
-        state = self.predictor.init_state(video_path=tmp_dir)  # guaranteed to work
-
-        # 3. Seed keypoints on first frame
+        # --- 3) init & seed SAM2 -----------------------------------
+        state = self.predictor.init_state(video_path=tmp_dir)
         keypoints = self.detect_body_keypoints(frames[0])
-        self.predictor.add_new_points(state, 0, 1, keypoints,
-                                      labels=np.ones(len(keypoints), np.int32))
+        self.predictor.add_new_points(
+            state,              # sampler state
+            0,                  # frame index in the sampled sequence
+            1,                  # object id
+            keypoints,
+            labels=np.ones(len(keypoints), np.int32),
+        )
 
-        # 4. Propagate masks (logits) through entire clip
-        # propagate only on the subsampled sequence
-        # map fidx_back → original frame index
-        video_segments: dict[int, np.ndarray] = {}
-        for fidx_sub, obj_ids, logits in self.predictor.propagate_in_video(state):
-            orig_idx = sampled_idxs[fidx_sub]
-            # if multiple objects, pick the first or merge as you like
-            mask = logits[0].cpu().numpy()
-            video_segments[orig_idx] = mask
-        logging.info("Mask propagation complete – streaming to encoder")
+        prop_iter = iter(self.predictor.propagate_in_video(state))
 
-        # 5. Spawn FFmpeg encoder, pipe raw BGRA
+        # --- 4) spawn FFmpeg with video+audio, tiling & row-mt -----
         output_path = "/output.webm"
         ffmpeg = subprocess.Popen([
             "ffmpeg", "-y",
-            "-f", "rawvideo", "-pix_fmt", "bgra",
-            "-s", f"{w}x{h}", "-r", str(fps), "-i", "-",
-            "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-auto-alt-ref", "0",
-            "-crf", str(crf), "-b:v", "0", "-cpu-used", "4", "-row-mt", "1",
-            output_path,
-        ], stdin=subprocess.PIPE)
-
-        ffmpeg = subprocess.Popen([
-            "ffmpeg", "-y",
-            "-f", "rawvideo", "-pix_fmt", "bgra",
-            "-s", f"{w}x{h}", "-r", str(fps), "-i", "-",
-            "-i", str(input_video),
+            "-f", "rawvideo", "-pix_fmt", "bgra", "-s", f"{w}x{h}", "-r", str(fps), "-i", "-",    # video pipe
+            "-i", str(input_video),                                                               # audio from source
             "-map", "0:v", "-map", "1:a",
-        
-            "-c:v", "libvpx-vp9",
-            "-pix_fmt", "yuva420p", "-auto-alt-ref", "0",
+            "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-auto-alt-ref", "0",
             "-crf", str(crf), "-b:v", "0",
-        
-            "-cpu-used", "3",          # faster encode
+            "-cpu-used", "3",
             "-row-mt", "1",
             "-tile-columns", "2",
-        
-            "-c:a", "copy",            # copy audio track
+            "-threads", "0",
+            "-c:a", "copy",
             output_path,
         ], stdin=subprocess.PIPE)
 
+        # --- 5) single-pass mask application + piping --------------
         prev_mask = None
-        frame_count = 0
-        
+        sub_i = 0
+        total = len(sampled_idxs)
         for idx, frame in enumerate(frames):
-            if idx in video_segments:
-                out_mask = video_segments[idx]
+            if sub_i < total and idx == sampled_idxs[sub_i]:
+                # time to pull the next propagated mask
+                fidx_sub, obj_ids, logits = next(prop_iter)
+                mask = logits[0].cpu().numpy()
+                sub_i += 1
             else:
-                # reuse last sampled mask
-                out_mask = prev_mask if prev_mask is not None else np.ones(frame.shape[:2], np.uint8)
-            prev_mask = out_mask
-        
-            bgra = self.apply_alpha_mask(frame, out_mask)
+                mask = prev_mask if prev_mask is not None else np.ones((h, w), np.uint8)
+
+            prev_mask = mask
+            bgra = self.apply_alpha_mask(frame, mask)
             ffmpeg.stdin.write(bgra.tobytes())
-            frame_count += 1
 
         ffmpeg.stdin.close()
         if ffmpeg.wait() != 0:
             raise RuntimeError("FFmpeg encoding failed")
 
-        logging.info(f"Processed {frame_count} frames → {output_path}")
+        logging.info(f"Processed {n_frames} frames → {output_path}")
         return Path(output_path)
+
 
     def detect_body_keypoints(self, frame):
         # Convert BGR to RGB
