@@ -23,7 +23,7 @@ build:
     - wget -q https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/main/sam2.1_hiera_base_plus.pt -O /sam2_hiera_base_plus.pt
     # Layer 4b: drop YAML into the installed sam2 package
     - bash -lc 'SAM2_PKG=$(python3 -c "import sam2,os; print(os.path.dirname(sam2.__file__))") && \
-                wget -q https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/main/sam2.1_hiera_b+.yaml \
-                     -O "${SAM2_PKG}/sam2.1_hiera_b+.yaml"'
+                curl -L https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/main/sam2.1_hiera_b+.yaml \
+                     -o "${SAM2_PKG}/sam2.1_hiera_b+.yaml"'
 
 predict: "predict.py:Predictor"
