@@ -34,7 +34,14 @@ class Predictor(BasePredictor):
         self.checkpoint = "sam2_hiera_base_plus.pt"
         self.model_cfg = "sam2.1_hiera_b+.yaml"
 
-        self.predictor = build_sam2_video_predictor(self.model_cfg, self.checkpoint)
+        if self.device == "cpu":
+            self.predictor = build_sam2_video_predictor(
+                self.model_cfg,
+                self.checkpoint,
+                overrides=["device=cpu"]
+            )
+        else:
+            self.predictor = build_sam2_video_predictor(self.model_cfg, self.checkpoint)
         logging.info("SAM2 predictor built successfully")
 
         # pre‑trained Faster R‑CNN for body detection
