@@ -48,6 +48,10 @@ class Predictor(BasePredictor):
         input_video: Path = Input(description="Input video file"),
         mask_every_n_frames: int = Input(description="Recompute alpha every N frames",
                                         default=2, ge=1, le=30),
+        jpeg_quality: int = Input(description="JPEG quality",
+                                        default=94, ge=1, le=100),
+        crf: int = Input(description="Output webm crf",
+                                        default=19, ge=1, le=32),
     ) -> Path:
 
         # 1. Decode clip directly into memory (BGR frames)
@@ -62,16 +66,19 @@ class Predictor(BasePredictor):
         n_frames = len(frames)
         if n_frames == 0:
             raise RuntimeError("No decodable frames in input video")
-        logging.info(f"Loaded {n_frames} frames (fps≈{fps:.2f})")
+        logging.info(f"Loaded {n_frames} frames (fps≈{fps:.2f}); every {mask_every_n_frames}")
 
         h, w = frames[0].shape[:2]
 
         # 2. JPEG dump for SAM‑2
         tmp_dir = tempfile.mkdtemp(prefix="sam2_frames_")
-        for i, frm in enumerate(frames):
-            cv2.imwrite(os.path.join(tmp_dir, f"{i:06d}.jpg"), frm,
-                        [int(cv2.IMWRITE_JPEG_QUALITY), 94])
-        logging.info(f"Wrote {len(frames)} JPEGs to {tmp_dir}")
+        # build a list of “sampled” frame indices
+        sampled_idxs = list(range(0, n_frames, mask_every_n_frames))
+        for j, orig_idx in enumerate(sampled_idxs):
+            frm = frames[orig_idx]
+            cv2.imwrite(os.path.join(tmp_dir, f"{j:06d}.jpg"), frm,
+                        [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
+        logging.info(f"Wrote {len(sampled_idxs)} JPEGs to {tmp_dir}")
         
         state = self.predictor.init_state(video_path=tmp_dir)  # guaranteed to work
 
@@ -81,10 +88,14 @@ class Predictor(BasePredictor):
                                       labels=np.ones(len(keypoints), np.int32))
 
         # 4. Propagate masks (logits) through entire clip
-        video_segments: dict[int, dict[int, np.ndarray]] = {}
-        for fidx, obj_ids, logits in self.predictor.propagate_in_video(state):
-            video_segments[fidx] = {oid: logits[i].cpu().numpy()
-                                    for i, oid in enumerate(obj_ids)}
+        # propagate only on the subsampled sequence
+        # map fidx_back → original frame index
+        video_segments: dict[int, np.ndarray] = {}
+        for fidx_sub, obj_ids, logits in self.predictor.propagate_in_video(state):
+            orig_idx = sampled_idxs[fidx_sub]
+            # if multiple objects, pick the first or merge as you like
+            mask = logits[0].cpu().numpy()
+            video_segments[orig_idx] = mask
         logging.info("Mask propagation complete – streaming to encoder")
 
         # 5. Spawn FFmpeg encoder, pipe raw BGRA
@@ -94,22 +105,20 @@ class Predictor(BasePredictor):
             "-f", "rawvideo", "-pix_fmt", "bgra",
             "-s", f"{w}x{h}", "-r", str(fps), "-i", "-",
             "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-auto-alt-ref", "0",
-            "-crf", "19", "-b:v", "0", "-cpu-used", "4", "-row-mt", "1",
+            "-crf", str(crf), "-b:v", "0", "-cpu-used", "4", "-row-mt", "1",
             output_path,
         ], stdin=subprocess.PIPE)
 
         prev_mask = None
         frame_count = 0
         
-        for idx, frame in enumerate(frames):          # use in‑memory frame list
-            if idx % mask_every_n_frames == 0 or prev_mask is None:
-                try:
-                    out_mask = next(iter(video_segments[idx].values()))
-                except (KeyError, StopIteration):
-                    out_mask = prev_mask if prev_mask is not None else np.ones(frame.shape[:2], np.uint8)
-                prev_mask = out_mask
+        for idx, frame in enumerate(frames):
+            if idx in video_segments:
+                out_mask = video_segments[idx]
             else:
-                out_mask = prev_mask
+                # reuse last sampled mask
+                out_mask = prev_mask if prev_mask is not None else np.ones(frame.shape[:2], np.uint8)
+            prev_mask = out_mask
         
             bgra = self.apply_alpha_mask(frame, out_mask)
             ffmpeg.stdin.write(bgra.tobytes())
@@ -197,16 +206,3 @@ class Predictor(BasePredictor):
         # Re‑map 0…255 so that fully‑inside pixels stay opaque
         feathered = np.clip((blurred.astype(np.float32) / 255.0) * 255, 0, 255).astype(np.uint8)
         return feathered
-
-if __name__ == "__main__":
-    from pathlib import Path
-    import sys
-
-    # Simple CLI:  python predict.py /path/to/video.webm 4
-    vid = Path(sys.argv[1])
-    n   = int(sys.argv[2]) if len(sys.argv) > 2 else 2
-
-    p = Predictor()
-    p.setup()
-    out = p.predict(input_video=vid, mask_every_n_frames=n)
-    print("Output:", out)
