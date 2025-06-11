@@ -175,6 +175,7 @@ class Predictor(BasePredictor):
             return keypoints
         else:
             # If no person is detected, fall back to center point
+            logging.info("No person detected, use center for key points")
             height, width = frame.shape[:2]
             center = np.array([[width // 2, height // 2]], dtype=np.float32)
             return np.tile(center, (5, 1))  # Return 5 identical center points as fallback
