@@ -97,6 +97,7 @@ class Predictor(BasePredictor):
         output_path = "/output.webm"
         ffmpeg = subprocess.Popen([
             "ffmpeg", "-y",
+            "-thread_queue_size", "64",
             "-f", "rawvideo", "-pix_fmt", "bgra", "-s", f"{w}x{h}", "-r", str(fps), "-i", "-",    # video pipe
             "-i", str(input_video),                                                               # audio from source
             "-map", "0:v", "-map", "1:a",
