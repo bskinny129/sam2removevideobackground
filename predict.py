@@ -109,6 +109,25 @@ class Predictor(BasePredictor):
             output_path,
         ], stdin=subprocess.PIPE)
 
+        ffmpeg = subprocess.Popen([
+            "ffmpeg", "-y",
+            "-f", "rawvideo", "-pix_fmt", "bgra",
+            "-s", f"{w}x{h}", "-r", str(fps), "-i", "-",
+            "-i", str(input_video),
+            "-map", "0:v", "-map", "1:a",
+        
+            "-c:v", "libvpx-vp9",
+            "-pix_fmt", "yuva420p", "-auto-alt-ref", "0",
+            "-crf", str(crf), "-b:v", "0",
+        
+            "-cpu-used", "3",          # faster encode
+            "-row-mt", "1",
+            "-tile-columns", "2",
+        
+            "-c:a", "copy",            # copy audio track
+            output_path,
+        ], stdin=subprocess.PIPE)
+
         prev_mask = None
         frame_count = 0
         
