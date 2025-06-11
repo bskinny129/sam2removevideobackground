@@ -116,8 +116,11 @@ class Predictor(BasePredictor):
         ffmpeg = subprocess.Popen([
             "ffmpeg", "-y",
             "-thread_queue_size", "64",
-            "-f", "rawvideo", "-pix_fmt", "bgra", "-s", f"{w}x{h}", "-r", str(fps), "-i", "-",    # video pipe
-            "-i", str(input_video),                                                               # audio from source
+            "-framerate", str(fps),
+            "-f", "rawvideo", "-pix_fmt", "bgra", 
+            "-s", f"{w}x{h}", "-i", "-",    # video pipe
+            "-thread_queue_size", "32",
+            "-i", str(input_video),         # audio from source
             "-map", "0:v", "-map", "1:a",
             "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-auto-alt-ref", "0",
             "-crf", str(crf), "-b:v", "0",
@@ -125,7 +128,8 @@ class Predictor(BasePredictor):
             "-row-mt", "1",
             "-tile-columns", "2",
             "-threads", "0",
-            "-c:a", "copy",
+            "-vsync", "0",                  #pass through timestamps
+            "-c:a", "copy",                 #copy audio
             output_path,
         ], stdin=subprocess.PIPE)
 
