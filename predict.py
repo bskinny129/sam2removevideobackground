@@ -47,7 +47,7 @@ class Predictor(BasePredictor):
         self,
         input_video: Path = Input(description="Input video file"),
         mask_every_n_frames: int = Input(description="Recompute alpha every N frames",
-                                        default=2, ge=1, le=30),
+                                        default=1, ge=1, le=30),
         jpeg_quality: int = Input(description="JPEG quality",
                                         default=94, ge=1, le=100),
         crf: int = Input(description="Output webm crf",
