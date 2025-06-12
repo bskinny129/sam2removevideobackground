@@ -113,11 +113,9 @@ class Predictor(BasePredictor):
             "-map", "0:v", "-map", "1:a",
             "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-auto-alt-ref", "0",
             "-crf", str(crf), "-b:v", "0",
-            "-cpu-used", "3",
             "-row-mt", "1",
             "-tile-columns", "2",
             "-threads", "0",
-            "-vsync", "0",                  #pass through timestamps
             "-c:a", "copy",                 #copy audio
             output_path,
         ], stdin=subprocess.PIPE)
