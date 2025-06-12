@@ -55,6 +55,12 @@ class Predictor(BasePredictor):
         soften_edge: bool = Input(description="Soften the edge a bit", default=True)
     ) -> Path:
 
+        if input_video.name == "warmup.mp4":
+            logging.info("Warmup request detected – skipping processing")
+            # just echo back the input (or point at a tiny stub file)
+            return input_video
+            
+
         # 1. Decode clip directly into memory (BGR frames)
         cap = cv2.VideoCapture(str(input_video))
         fps = cap.get(cv2.CAP_PROP_FPS) or 30
