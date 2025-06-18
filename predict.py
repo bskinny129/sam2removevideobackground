@@ -93,10 +93,15 @@ class Predictor(BasePredictor):
             )
         logging.info(f"Wrote {len(sampled_idxs)} JPEGs → {tmp_dir}")
 
-        # 3️⃣ seed SAM-2 with refined mask
+        # 3️⃣ seed SAM-2 with refined mask on multiple early frames
         state = self.predictor.init_state(video_path=tmp_dir)
         seed_mask = self.get_portrait_mask(frames[0], selfie_threshold)
-        self.predictor.add_new_mask(state, 0, 1, seed_mask)
+        
+        # Add the same high-quality mask to first 3 frames for better temporal consistency
+        for frame_idx in [0, 1, 2]:
+            if frame_idx < len(sampled_idxs):
+                self.predictor.add_new_mask(state, frame_idx, 1, seed_mask)
+                
         prop_iter = iter(self.predictor.propagate_in_video(state))
 
         # 4️⃣ spawn FFmpeg encoder
@@ -129,13 +134,13 @@ class Predictor(BasePredictor):
             if ptr < len(sampled_idxs) and idx == sampled_idxs[ptr]:
                 _, _, logits = next(prop_iter)
                 mask = logits[0].cpu().numpy()
-                if idx == 0:
+                if idx < 5:  # Log first 5 frames
                     logging.info(f"🔍 Frame {idx}: Using SAM-2 refined mask (shape: {mask.shape})")
                 ptr += 1
             else:
                 mask = prev_mask if prev_mask is not None else np.ones((h, w), np.uint8)
-                if idx == 0:
-                    logging.info(f"🔍 Frame {idx}: Using fallback mask")
+                if idx < 5:  # Log first 5 frames
+                    logging.info(f"🔍 Frame {idx}: Using interpolated mask")
             prev_mask = mask
             bgra = self.apply_alpha_mask(frame, mask, soften_edge)
             ffmpeg.stdin.write(bgra.tobytes())
@@ -169,12 +174,12 @@ class Predictor(BasePredictor):
         clean    = cv2.morphologyEx(bin0, cv2.MORPH_OPEN,  kernel3)
         clean    = cv2.morphologyEx(clean, cv2.MORPH_CLOSE, kernel5)
 
-        # 3) Aggressive erosion to pull edges inward and eliminate halos
-        kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        # 3) Less aggressive erosion to pull edges inward and reduce halos
+        kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
         clean = cv2.erode(clean, kernel_erode, iterations=2)
 
-        # 4) Light blur on the cleaned float mask (less aggressive than before)
-        blur = cv2.GaussianBlur(clean.astype(np.float32), (3, 3), 0.5)
+        # 4) Light blur with more smoothing on the cleaned float mask
+        blur = cv2.GaussianBlur(clean.astype(np.float32), (3, 3), 1.0)
 
         # 5) re-threshold at 0.3 to get a tighter binary mask
         return (blur > 0.3).astype(np.uint8)
