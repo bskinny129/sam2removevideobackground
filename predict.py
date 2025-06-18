@@ -170,10 +170,10 @@ class Predictor(BasePredictor):
         clean    = cv2.morphologyEx(clean, cv2.MORPH_CLOSE, kernel5)
 
         # 3) 1px Gaussian blur on the cleaned float mask
-        blur     = cv2.GaussianBlur(clean.astype(np.float32), (3, 3), 0.6)
+        blur     = cv2.GaussianBlur(clean.astype(np.float32), (5, 5), 1.0)
 
-        # 4) re-threshold at 0.2 to get a crisp binary mask
-        return (blur > 0.2).astype(np.uint8)
+        # 4) re-threshold at 0.1 to get a softer binary mask
+        return (blur > 0.1).astype(np.uint8)
 
     def apply_alpha_mask(self, frame, mask, soften_edge):
         # 1) Binary mask from SAM logits
@@ -189,9 +189,13 @@ class Predictor(BasePredictor):
         if soften_edge:
             alpha = self.feather_alpha(alpha)
 
+        # 4.5) Small erosion to pull edges inward and reduce halos
+        kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        alpha = cv2.erode(alpha, kernel_erode, iterations=1)
+
         # 5) FINAL 1-px Gaussian blur on alpha
-        #    kernel (3,3) with sigma=0.5 ≈ 1px blur radius
-        alpha = cv2.GaussianBlur(alpha, (3, 3), 0.5)
+        #    kernel (5,5) with sigma=1.0 for softer edges
+        alpha = cv2.GaussianBlur(alpha, (5, 5), 1.0)
 
         # 6) Composite
         rgb = cv2.bitwise_and(frame, frame, mask=alpha)
