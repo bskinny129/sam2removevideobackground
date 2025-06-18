@@ -159,32 +159,41 @@ class Predictor(BasePredictor):
         if results.segmentation_mask is None:
             return np.zeros(frame.shape[:2], dtype=np.uint8)
 
-        # segmentation_mask is float32 H×W in [0..1]
-        mask = results.segmentation_mask
-        # threshold and cast
-        binary_mask = (mask > thresh).astype(np.uint8)
-        
-        # Apply morphological operations to clean up the mask
-        # 1. Small opening to remove noise
-        kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel_small)
-        
-        # 2. Fill small holes
-        kernel_medium = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel_medium)
-        
-        # 3. Slight dilation to recover slightly eroded edges
-        kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-        binary_mask = cv2.dilate(binary_mask, kernel_dilate, iterations=1)
-        
-        return binary_mask
+        # 1) initial float mask
+        float_mask = (m > thresh).astype(np.float32)
+
+        # 2) clean up binary (for morphology)
+        kernel3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        kernel5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        bin0     = (float_mask > 0.5).astype(np.uint8)
+        clean    = cv2.morphologyEx(bin0, cv2.MORPH_OPEN,  kernel3)
+        clean    = cv2.morphologyEx(clean, cv2.MORPH_CLOSE, kernel5)
+
+        # 3) 1px Gaussian blur on the cleaned float mask
+        blur     = cv2.GaussianBlur(clean.astype(np.float32), (3, 3), 0.6)
+
+        # 4) re-threshold at 0.2 to get a crisp binary mask
+        return (blur > 0.2).astype(np.uint8)
 
     def apply_alpha_mask(self, frame, mask, soften_edge):
-        mask = (mask.squeeze() > 0.5).astype(np.uint8)
-        mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]), cv2.INTER_NEAREST)
-        alpha = (mask * 255).astype(np.uint8)
+        # 1) Binary mask from SAM logits
+        bin_mask = (mask.squeeze() > 0.5).astype(np.uint8)
+
+        # 2) Resize to full frame
+        bin_mask = cv2.resize(bin_mask, (frame.shape[1], frame.shape[0]), cv2.INTER_NEAREST)
+
+        # 3) Build 8-bit alpha
+        alpha = (bin_mask * 255).astype(np.uint8)
+
+        # 4) Optional pre-blur (your existing feather_alpha)
         if soften_edge:
             alpha = self.feather_alpha(alpha)
+
+        # 5) FINAL 1-px Gaussian blur on alpha
+        #    kernel (3,3) with sigma=0.5 ≈ 1px blur radius
+        alpha = cv2.GaussianBlur(alpha, (3, 3), 0.5)
+
+        # 6) Composite
         rgb = cv2.bitwise_and(frame, frame, mask=alpha)
         return np.dstack([rgb, alpha])
 
