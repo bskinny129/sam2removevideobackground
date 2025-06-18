@@ -185,17 +185,13 @@ class Predictor(BasePredictor):
         # 3) Build 8-bit alpha
         alpha = (bin_mask * 255).astype(np.uint8)
 
-        # 4) Optional pre-blur (your existing feather_alpha)
-        if soften_edge:
-            alpha = self.feather_alpha(alpha)
-
-        # 4.5) Small erosion to pull edges inward and reduce halos
+        # 4) Small erosion to pull edges inward and reduce halos
         kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         alpha = cv2.erode(alpha, kernel_erode, iterations=1)
 
-        # 5) FINAL 1-px Gaussian blur on alpha
-        #    kernel (5,5) with sigma=1.0 for softer edges
-        alpha = cv2.GaussianBlur(alpha, (5, 5), 1.0)
+        # 5) Optional feathering to soften the now-cleaner edges
+        if soften_edge:
+            alpha = self.feather_alpha(alpha)
 
         # 6) Composite
         rgb = cv2.bitwise_and(frame, frame, mask=alpha)
