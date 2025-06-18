@@ -160,7 +160,7 @@ class Predictor(BasePredictor):
             return np.zeros(frame.shape[:2], dtype=np.uint8)
 
         # 1) initial float mask
-        float_mask = (m > thresh).astype(np.float32)
+        float_mask = (results.segmentation_mask > thresh).astype(np.float32)
 
         # 2) clean up binary (for morphology)
         kernel3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
