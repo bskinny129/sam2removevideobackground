@@ -16,7 +16,7 @@ class Predictor(BasePredictor):
     """
     Background-removal for portrait video using:
       • MediaPipe SelfieSegmentation seed mask
-      • SAM-2 “hiera-base-plus” refinement
+      • SAM-2 "hiera-base-plus" refinement
       • VP9 + alpha single-pass encode
     """
 
@@ -56,6 +56,9 @@ class Predictor(BasePredictor):
         ),
         crf: int = Input(description="VP9 CRF", default=19, ge=1, le=32),
         soften_edge: bool = Input(description="Feather mask edge", default=True),
+        selfie_threshold: float = Input(
+            description="MediaPipe selfie segmentation threshold", default=0.3, ge=0.1, le=0.9
+        ),
     ) -> Path:                                           # ← return cog.Path
         # warm-up shortcut
         if input_video.name == "warmup.mp4":
@@ -90,9 +93,9 @@ class Predictor(BasePredictor):
             )
         logging.info(f"Wrote {len(sampled_idxs)} JPEGs → {tmp_dir}")
 
-        # 3️⃣ seed SAM-2 with DeepLab mask
+        # 3️⃣ seed SAM-2 with refined mask
         state = self.predictor.init_state(video_path=tmp_dir)
-        seed_mask = self.get_portrait_mask(frames[0])
+        seed_mask = self.get_portrait_mask(frames[0], selfie_threshold)
         self.predictor.add_new_mask(state, 0, 1, seed_mask)
         prop_iter = iter(self.predictor.propagate_in_video(state))
 
@@ -126,9 +129,13 @@ class Predictor(BasePredictor):
             if ptr < len(sampled_idxs) and idx == sampled_idxs[ptr]:
                 _, _, logits = next(prop_iter)
                 mask = logits[0].cpu().numpy()
+                if idx == 0:
+                    logging.info(f"🔍 Frame {idx}: Using SAM-2 refined mask (shape: {mask.shape})")
                 ptr += 1
             else:
                 mask = prev_mask if prev_mask is not None else np.ones((h, w), np.uint8)
+                if idx == 0:
+                    logging.info(f"🔍 Frame {idx}: Using fallback mask")
             prev_mask = mask
             bgra = self.apply_alpha_mask(frame, mask, soften_edge)
             ffmpeg.stdin.write(bgra.tobytes())
@@ -144,6 +151,7 @@ class Predictor(BasePredictor):
     def get_portrait_mask(self, frame, thresh: float = 0.35) -> np.ndarray:
         """
         Returns a H×W uint8 mask of the upper-body/head using MediaPipe SelfieSegmentation.
+        Now with morphological refinement to reduce edge artifacts.
         """
         # MediaPipe expects RGB
         img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -154,7 +162,22 @@ class Predictor(BasePredictor):
         # segmentation_mask is float32 H×W in [0..1]
         mask = results.segmentation_mask
         # threshold and cast
-        return (mask > thresh).astype(np.uint8)
+        binary_mask = (mask > thresh).astype(np.uint8)
+        
+        # Apply morphological operations to clean up the mask
+        # 1. Small opening to remove noise
+        kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel_small)
+        
+        # 2. Fill small holes
+        kernel_medium = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel_medium)
+        
+        # 3. Slight dilation to recover slightly eroded edges
+        kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+        binary_mask = cv2.dilate(binary_mask, kernel_dilate, iterations=1)
+        
+        return binary_mask
 
     def apply_alpha_mask(self, frame, mask, soften_edge):
         mask = (mask.squeeze() > 0.5).astype(np.uint8)
