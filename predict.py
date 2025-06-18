@@ -8,14 +8,14 @@ import numpy as np
 import torch
 from cog import BasePredictor, Input, Path              # ← use cog.Path
 from sam2.build_sam import build_sam2_video_predictor
-from torchvision.models.segmentation import deeplabv3_resnet50
-from torchvision.transforms import functional as F
+
+import mediapipe as mp
 
 
 class Predictor(BasePredictor):
     """
     Background-removal for portrait video using:
-      • DeepLab V3 seed mask
+      • MediaPipe SelfieSegmentation seed mask
       • SAM-2 “hiera-base-plus” refinement
       • VP9 + alpha single-pass encode
     """
@@ -38,9 +38,11 @@ class Predictor(BasePredictor):
         self.predictor = build_sam2_video_predictor(self.model_cfg, self.checkpoint)
         logging.info("✅ SAM-2 video predictor ready")
 
-        # DeepLab V3 person mask
-        self.seg = deeplabv3_resnet50(weights="DEFAULT").eval().to(self.device)
-        logging.info("✅ DeepLab V3 loaded")
+        # MediaPipe Selfie for portrait segmentation
+        self.selfie = mp.solutions.selfie_segmentation.SelfieSegmentation(
+            model_selection=1
+        )
+        logging.info("✅ MediaPipe SelfieSegmentation loaded")
 
     # ────────────────────────── predict ───────────────────────────
     def predict(
@@ -90,7 +92,7 @@ class Predictor(BasePredictor):
 
         # 3️⃣ seed SAM-2 with DeepLab mask
         state = self.predictor.init_state(video_path=tmp_dir)
-        seed_mask = self.get_person_mask(frames[0])
+        seed_mask = self.get_portrait_mask(frames[0])
         self.predictor.add_new_mask(state, 0, 1, seed_mask)
         prop_iter = iter(self.predictor.propagate_in_video(state))
 
@@ -139,15 +141,23 @@ class Predictor(BasePredictor):
         return Path(output_path)                         # ← cog.Path
 
     # ─────────────────────── helpers ─────────────────────────────
-    def get_person_mask(self, frame, thresh: float = 0.40):
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        ten = F.to_tensor(rgb).unsqueeze(0).to(self.device)
-        with torch.inference_mode():
-            logits = self.seg(ten)["out"][0, 15]  # class-id 15 = person
-        return (logits.sigmoid() > thresh).cpu().numpy().astype(np.uint8)
+    def get_portrait_mask(self, frame, thresh: float = 0.35) -> np.ndarray:
+        """
+        Returns a H×W uint8 mask of the upper-body/head using MediaPipe SelfieSegmentation.
+        """
+        # MediaPipe expects RGB
+        img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.selfie.process(img)
+        if results.segmentation_mask is None:
+            return np.zeros(frame.shape[:2], dtype=np.uint8)
+
+        # segmentation_mask is float32 H×W in [0..1]
+        mask = results.segmentation_mask
+        # threshold and cast
+        return (mask > thresh).astype(np.uint8)
 
     def apply_alpha_mask(self, frame, mask, soften_edge):
-        mask = (mask.squeeze() > 0).astype(np.uint8)
+        mask = (mask.squeeze() > 0.5).astype(np.uint8)
         mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]), cv2.INTER_NEAREST)
         alpha = (mask * 255).astype(np.uint8)
         if soften_edge:
