@@ -183,14 +183,14 @@ class Predictor(BasePredictor):
             clean = (labels == largest_label).astype(np.uint8)
 
         # 3) Less aggressive erosion to pull edges inward and reduce halos
-        kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
         clean = cv2.erode(clean, kernel_erode, iterations=2)
 
         # 4) Light blur with more smoothing on the cleaned float mask
-        blur = cv2.GaussianBlur(clean.astype(np.float32), (3, 3), 0.5)
+        #blur = cv2.GaussianBlur(clean.astype(np.float32), (3, 3), 0.5)
 
-        # 5) re-threshold at 0.3 to get a tighter binary mask
-        return (blur > 0.3).astype(np.uint8)
+        # 5) return the clean binary mask directly
+        return clean
 
     def apply_alpha_mask(self, frame, mask, soften_edge):
         # 1) Binary mask from SAM logits
