@@ -174,12 +174,20 @@ class Predictor(BasePredictor):
         clean    = cv2.morphologyEx(bin0, cv2.MORPH_OPEN,  kernel3)
         clean    = cv2.morphologyEx(clean, cv2.MORPH_CLOSE, kernel5)
 
+        # 2.5) Keep only the largest connected component (main subject)
+        # This filters out people on screens, reflections, photos, etc.
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(clean, connectivity=8)
+        if num_labels > 1:  # If we found connected components (excluding background)
+            # Find the largest component (excluding background label 0)
+            largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+            clean = (labels == largest_label).astype(np.uint8)
+
         # 3) Less aggressive erosion to pull edges inward and reduce halos
-        kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+        kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         clean = cv2.erode(clean, kernel_erode, iterations=2)
 
         # 4) Light blur with more smoothing on the cleaned float mask
-        blur = cv2.GaussianBlur(clean.astype(np.float32), (3, 3), 1.0)
+        blur = cv2.GaussianBlur(clean.astype(np.float32), (3, 3), 0.5)
 
         # 5) re-threshold at 0.3 to get a tighter binary mask
         return (blur > 0.3).astype(np.uint8)
