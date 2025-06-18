@@ -151,7 +151,7 @@ class Predictor(BasePredictor):
     def get_portrait_mask(self, frame, thresh: float = 0.35) -> np.ndarray:
         """
         Returns a H×W uint8 mask of the upper-body/head using MediaPipe SelfieSegmentation.
-        Now with morphological refinement to reduce edge artifacts.
+        Now with aggressive morphological refinement to reduce edge halos.
         """
         # MediaPipe expects RGB
         img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -159,7 +159,7 @@ class Predictor(BasePredictor):
         if results.segmentation_mask is None:
             return np.zeros(frame.shape[:2], dtype=np.uint8)
 
-        # 1) initial float mask
+        # 1) initial float mask with higher threshold to start tighter
         float_mask = (results.segmentation_mask > thresh).astype(np.float32)
 
         # 2) clean up binary (for morphology)
@@ -169,11 +169,15 @@ class Predictor(BasePredictor):
         clean    = cv2.morphologyEx(bin0, cv2.MORPH_OPEN,  kernel3)
         clean    = cv2.morphologyEx(clean, cv2.MORPH_CLOSE, kernel5)
 
-        # 3) 1px Gaussian blur on the cleaned float mask
-        blur     = cv2.GaussianBlur(clean.astype(np.float32), (5, 5), 1.0)
+        # 3) Aggressive erosion to pull edges inward and eliminate halos
+        kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        clean = cv2.erode(clean, kernel_erode, iterations=2)
 
-        # 4) re-threshold at 0.1 to get a softer binary mask
-        return (blur > 0.1).astype(np.uint8)
+        # 4) Light blur on the cleaned float mask (less aggressive than before)
+        blur = cv2.GaussianBlur(clean.astype(np.float32), (3, 3), 0.5)
+
+        # 5) re-threshold at 0.3 to get a tighter binary mask
+        return (blur > 0.3).astype(np.uint8)
 
     def apply_alpha_mask(self, frame, mask, soften_edge):
         # 1) Binary mask from SAM logits
