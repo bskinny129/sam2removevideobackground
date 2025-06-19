@@ -199,7 +199,7 @@ class Predictor(BasePredictor):
 
         # 4) Small erosion to pull edges inward and reduce halos
         kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-        alpha = cv2.erode(alpha, kernel_erode, iterations=1)
+        alpha = cv2.erode(alpha, kernel_erode, iterations=2)
 
         # 5) Optional feathering to soften the now-cleaner edges
         if soften_edge:
