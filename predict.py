@@ -56,9 +56,6 @@ class Predictor(BasePredictor):
         ),
         crf: int = Input(description="VP9 CRF", default=19, ge=1, le=32),
         soften_edge: bool = Input(description="Feather mask edge", default=True),
-        selfie_threshold: float = Input(
-            description="MediaPipe selfie segmentation threshold", default=0.3, ge=0.1, le=0.9
-        ),
     ) -> Path:                                           # ← return cog.Path
         # warm-up shortcut
         if input_video.name == "warmup.mp4":
@@ -96,7 +93,7 @@ class Predictor(BasePredictor):
 
         # 3️⃣ seed SAM-2 with refined mask on multiple early frames
         state = self.predictor.init_state(video_path=tmp_dir)
-        seed_mask = self.get_portrait_mask(frames[0], selfie_threshold)
+        seed_mask = self.get_portrait_mask(frames[0], 0.3)
         
         # Add the same high-quality mask to first 3 frames for better temporal consistency
         seed_frames = min(3, len(sampled_idxs))
@@ -151,7 +148,7 @@ class Predictor(BasePredictor):
         return Path(output_path)                         # ← cog.Path
 
     # ─────────────────────── helpers ─────────────────────────────
-    def get_portrait_mask(self, frame, thresh: float = 0.35) -> np.ndarray:
+    def get_portrait_mask(self, frame, thresh: float = 0.3) -> np.ndarray:
         """
         Returns a H×W uint8 mask of the upper-body/head using MediaPipe SelfieSegmentation.
         Now with aggressive morphological refinement to reduce edge halos.
