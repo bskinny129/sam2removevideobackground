@@ -85,7 +85,8 @@ class Predictor(BasePredictor):
         tmp_dir = tempfile.mkdtemp(prefix="sam2_frames_")
         sampled_idxs = list(range(0, n_frames, mask_every_n_frames))
         for j, orig_idx in enumerate(sampled_idxs):
-            q = 100 if j == 0 else jpeg_quality
+            # Use max quality for first 3 frames (seed frames) for better SAM-2 results
+            q = 100 if j < 3 else jpeg_quality
             cv2.imwrite(
                 os.path.join(tmp_dir, f"{j:06d}.jpg"),
                 frames[orig_idx],
@@ -98,9 +99,10 @@ class Predictor(BasePredictor):
         seed_mask = self.get_portrait_mask(frames[0], selfie_threshold)
         
         # Add the same high-quality mask to first 3 frames for better temporal consistency
-        for frame_idx in [0, 1, 2]:
-            if frame_idx < len(sampled_idxs):
-                self.predictor.add_new_mask(state, frame_idx, 1, seed_mask)
+        seed_frames = min(3, len(sampled_idxs))
+        for frame_idx in range(seed_frames):
+            self.predictor.add_new_mask(state, frame_idx, 1, seed_mask)
+        logging.info(f"Seeded {seed_frames} frames with portrait mask")
                 
         prop_iter = iter(self.predictor.propagate_in_video(state))
 
@@ -134,13 +136,9 @@ class Predictor(BasePredictor):
             if ptr < len(sampled_idxs) and idx == sampled_idxs[ptr]:
                 _, _, logits = next(prop_iter)
                 mask = logits[0].cpu().numpy()
-                if idx < 5:  # Log first 5 frames
-                    logging.info(f"🔍 Frame {idx}: Using SAM-2 refined mask (shape: {mask.shape})")
                 ptr += 1
             else:
                 mask = prev_mask if prev_mask is not None else np.ones((h, w), np.uint8)
-                if idx < 5:  # Log first 5 frames
-                    logging.info(f"🔍 Frame {idx}: Using interpolated mask")
             prev_mask = mask
             bgra = self.apply_alpha_mask(frame, mask, soften_edge)
             ffmpeg.stdin.write(bgra.tobytes())
@@ -194,7 +192,7 @@ class Predictor(BasePredictor):
 
     def apply_alpha_mask(self, frame, mask, soften_edge):
         # 1) Binary mask from SAM logits
-        bin_mask = (mask.squeeze() > 0.5).astype(np.uint8)
+        bin_mask = (mask.squeeze() > 0.4).astype(np.uint8)
 
         # 2) Resize to full frame
         bin_mask = cv2.resize(bin_mask, (frame.shape[1], frame.shape[0]), cv2.INTER_NEAREST)
@@ -203,7 +201,7 @@ class Predictor(BasePredictor):
         alpha = (bin_mask * 255).astype(np.uint8)
 
         # 4) Small erosion to pull edges inward and reduce halos
-        kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
         alpha = cv2.erode(alpha, kernel_erode, iterations=1)
 
         # 5) Optional feathering to soften the now-cleaner edges
