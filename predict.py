@@ -114,6 +114,7 @@ class Predictor(BasePredictor):
                 "-s", f"{w}x{h}", "-i", "-",
                 "-thread_queue_size", "32",
                 "-i", str(input_video),
+                "-vf", "format=yuva420p",
                 "-map", "0:v", "-map", "1:a",
                 "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
                 "-auto-alt-ref", "0",
@@ -145,6 +146,23 @@ class Predictor(BasePredictor):
             raise RuntimeError("FFmpeg encoding failed")
 
         logging.info(f"✅ Finished → {output_path}")
+        
+        # ── probe the output for its pixel format ───────────────────────────────────
+        try:
+            # run ffprobe to get the pix_fmt
+            result = subprocess.run([
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=pix_fmt,codec_name,width,height",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                output_path
+            ], capture_output=True, text=True, check=True)
+            pix_fmt = result.stdout.strip()
+            logging.info(f"🔍 Output pixel format: {pix_fmt}")
+        except subprocess.CalledProcessError as e:
+            logging.warning(f"⚠️  ffprobe failed: {e.stderr.strip() if e.stderr else e}")
+
         return Path(output_path)                         # ← cog.Path
 
     # ─────────────────────── helpers ─────────────────────────────
