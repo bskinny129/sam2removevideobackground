@@ -144,7 +144,9 @@ class Predictor(BasePredictor):
             "ffmpeg", "-y",
             "-i", str(input_video),
             "-i", mask_path,
-            "-filter_complex", "[0:v][1:v]alphamerge,format=yuva420p",
+            "-filter_complex", "[0:v][1:v]alphamerge,format=yuva420p[alpha]",
+            "-map", "[alpha]",
+            "-map", "0:a?",
             "-c:v","libvpx-vp9","-pix_fmt","yuva420p",
             "-auto-alt-ref","0","-crf",str(crf),"-b:v","0",
             merged_path
