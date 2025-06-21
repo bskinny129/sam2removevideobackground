@@ -114,7 +114,8 @@ class Predictor(BasePredictor):
                 "-s", f"{w}x{h}", "-i", "-",
                 "-thread_queue_size", "32",
                 "-i", str(input_video),
-                "-vf", "format=yuva420p",
+                # ── double‐format filter ensures alpha is preserved ───────
+                "-filter_complex", "format=rgba,format=yuva420p",
                 "-map", "0:v", "-map", "1:a?",
                 "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
                 "-auto-alt-ref", "0",
