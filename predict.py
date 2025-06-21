@@ -2,6 +2,7 @@ import logging
 import os
 import subprocess
 import tempfile
+from typing import List
 
 import cv2
 import numpy as np
@@ -56,7 +57,7 @@ class Predictor(BasePredictor):
         ),
         crf: int = Input(description="VP9 CRF", default=19, ge=1, le=32),
         soften_edge: bool = Input(description="Feather mask edge", default=True),
-    ) -> Path:                                           # ← return cog.Path
+    ) -> List[Path]:                                           # ← return cog.Path
         # warm-up shortcut
         if input_video.name == "warmup.mp4":
             logging.info("Warm-up request – echoing source")
@@ -148,6 +149,43 @@ class Predictor(BasePredictor):
             raise RuntimeError("FFmpeg encoding failed")
 
         logging.info(f"✅ Finished → {output_path}")
+
+        mask_path   = "/tmp/mask.webm"
+        merged_path = "/tmp/output_alpha.webm"
+        # 5️⃣ Extract just the alpha channel from your first‐pass WebM
+        mask_proc = subprocess.Popen([
+            "ffmpeg", "-y",
+            "-i", output_path,            # first‐pass WebM
+            "-vf", "alphaextract",        # grab only alpha
+            "-c:v", "libvpx-vp9",
+            "-pix_fmt", "yuv420p",
+            "-auto-alt-ref", "0",
+            "-crf", str(crf), "-b:v", "0",
+            mask_path
+        ])
+        ret = mask_proc.wait()
+        if ret != 0:
+            raise RuntimeError(f"Alpha‐extract failed ({ret})")
+        logging.info(f"✅ Alpha mask extracted → {mask_path}")
+
+        # 6️⃣ Merge the color from pass 1 with that mask into a true VP9+alpha WebM
+        merge_proc = subprocess.Popen([
+            "ffmpeg", "-y",
+            "-i", output_path,            # color+alpha from pass 1
+            "-i", mask_path,              # alpha mask
+            "-filter_complex", "[0:v][1:v]alphamerge,format=yuva420p[vid]",
+            "-map", "[vid]",
+            "-map", "0:a?",               # carry audio if any
+            "-c:v", "libvpx-vp9",
+            "-pix_fmt", "yuva420p",
+            "-auto-alt-ref", "0",
+            "-crf", str(crf), "-b:v", "0",
+            merged_path
+        ])
+        ret = merge_proc.wait()
+        if ret != 0:
+            raise RuntimeError(f"Alpha‐merge failed ({ret})")
+        logging.info(f"✅ Merged α‐WebM → {merged_path}")
         
         # ── probe the output for its pixel format ───────────────────────────────────
         try:
@@ -158,14 +196,14 @@ class Predictor(BasePredictor):
                 "-select_streams", "v:0",
                 "-show_entries", "stream=pix_fmt,codec_name,width,height",
                 "-of", "default=noprint_wrappers=1:nokey=1",
-                output_path
+                merged_path
             ], capture_output=True, text=True, check=True)
             pix_fmt = result.stdout.strip()
-            logging.info(f"🔍 Output pixel format: {pix_fmt}")
+            logging.info(f"🔍 merged_path pixel format: {pix_fmt}")
         except subprocess.CalledProcessError as e:
             logging.warning(f"⚠️  ffprobe failed: {e.stderr.strip() if e.stderr else e}")
 
-        return Path(output_path)                         # ← cog.Path
+        return [Path(output_path), Path(merged_path)]
 
     # ─────────────────────── helpers ─────────────────────────────
     def get_portrait_mask(self, frame, thresh: float = 0.3) -> np.ndarray:
