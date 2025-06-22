@@ -4,7 +4,7 @@ build:
   python_version: "3.10"
 
   system_packages:
-    - ffmpeg
+    - xz-utils
     - libgl1-mesa-glx
     - libglib2.0-0
     - git
@@ -12,6 +12,18 @@ build:
     - nvidia-cuda-toolkit
 
   run:
+    # ────────────────────────────────────────────────────────────────
+    # 🛠️  Install a modern static FFmpeg with alpha support (early!)
+    # ────────────────────────────────────────────────────────────────
+    # 1) grab the John Van Sickle build:
+    - wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -O /tmp/ffmpeg-static.tar.xz
+    # 2) unpack just ffmpeg + ffprobe into vendor/bin:
+    - mkdir -p vendor/ffmpeg/bin
+    - tar -xJf /tmp/ffmpeg-static.tar.xz --strip-components=1 -C vendor/ffmpeg/bin ffmpeg-*-static/ffmpeg ffmpeg-*-static/ffprobe
+    # 3) make them executable
+    - chmod +x vendor/ffmpeg/bin/ffmpeg vendor/ffmpeg/bin/ffprobe
+    - rm /tmp/ffmpeg-static.tar.xz
+
     - pip install --no-cache-dir --upgrade pip
     # Layer 1: PyTorch + TorchVision
     - pip install --no-cache-dir torch==2.0.1+cu117 torchvision==0.15.2+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
@@ -21,6 +33,7 @@ build:
     - pip install --no-cache-dir opencv-python==4.7.0.72 numpy==1.24.4 timm==0.6.13
     # Layer 3b: portrait segmentation
     - pip install --no-cache-dir mediapipe
+
     # Layer 4: download weights + YAML
     - wget -q https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/main/sam2.1_hiera_base_plus.pt -O /sam2_hiera_base_plus.pt
     # Layer 4b: download YAML to repo root
