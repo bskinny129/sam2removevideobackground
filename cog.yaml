@@ -19,7 +19,7 @@ build:
     - wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -O /tmp/ffmpeg-static.tar.xz
     # 2) unpack just ffmpeg + ffprobe into vendor/bin:
     - mkdir -p vendor/ffmpeg/bin
-    - tar -xJf /tmp/ffmpeg-static.tar.xz --strip-components=1 -C vendor/ffmpeg/bin ffmpeg-*-static/ffmpeg ffmpeg-*-static/ffprobe
+    - tar --wildcards -xJf /tmp/ffmpeg-static.tar.xz --strip-components=1 -C vendor/ffmpeg/bin 'ffmpeg-*-static/ffmpeg' 'ffmpeg-*-static/ffprobe'
     # 3) make them executable
     - chmod +x vendor/ffmpeg/bin/ffmpeg vendor/ffmpeg/bin/ffprobe
     - rm /tmp/ffmpeg-static.tar.xz
