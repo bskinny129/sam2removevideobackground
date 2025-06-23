@@ -35,11 +35,13 @@ build:
     - pip install --no-cache-dir mediapipe
 
     # Layer 4: download weights + YAML
-    - wget -q https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/main/sam2.1_hiera_base_plus.pt -O sam2_hiera_base_plus.pt
+    - wget -q https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/main/sam2.1_hiera_base_plus.pt -O /src/sam2_hiera_base_plus.pt
     # Layer 4b: download YAML to repo root
-    - wget -q https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/main/sam2.1_hiera_b+.yaml -O sam2.1_hiera_b+.yaml
+    - wget -q https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/main/sam2.1_hiera_b+.yaml -O /src/sam2.1_hiera_b+.yaml
+    # **DEBUG**: list the contents of /src so you can verify the files are there
+    - ls -l /src
     # Layer 4c: move YAML into installed sam2 package
-    - bash -lc 'SAM2_PKG=$(python3 -c "import sam2,os; print(os.path.dirname(sam2.__file__))") && mv sam2.1_hiera_b+.yaml "${SAM2_PKG}/sam2.1_hiera_b+.yaml"'
+    - bash -lc 'SAM2_PKG=$(python3 -c "import sam2,os; print(os.path.dirname(sam2.__file__))") && mv /src/sam2.1_hiera_b+.yaml "${SAM2_PKG}/sam2.1_hiera_b+.yaml"'
 
 
 predict: "predict.py:Predictor"
