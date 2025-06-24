@@ -130,15 +130,16 @@ class Predictor(BasePredictor):
             "-i",               "-",        # <–– stdin pipe
 
             # ↑↑ Original video for its audio ↑↑
-            "-thread_queue_size", "32",
-            "-i",                 str(input_video),
+            #"-thread_queue_size", "32",
+            #"-i",                 str(input_video),
 
             # convert only the pipe-feed (0:v) into yuva420p
             "-filter_complex", "[0:v]format=yuva420p[vid]",
 
             # map that video + the audio track
             "-map", "[vid]",
-            "-map", "1:a?",
+            #"-map", "1:a?",
+            "-an", #drop audio
 
             # VP9 encode with alpha
             "-c:v",      "libvpx-vp9",
