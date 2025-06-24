@@ -143,7 +143,6 @@ class Predictor(BasePredictor):
 
             # VP9 encode with alpha
             "-c:v",      "libvpx-vp9",
-            "-profile:v", "1",
             "-pix_fmt",  "yuva420p",
             "-auto-alt-ref", "0",
             "-crf",      str(crf),
@@ -158,7 +157,7 @@ class Predictor(BasePredictor):
             "-metadata:s:v:0", "alpha_mode=1",
 
             # passthru audio
-            "-c:a",      "copy",
+            #"-c:a",      "copy",
 
             output_path,
         ], stdin=subprocess.PIPE)
@@ -181,7 +180,9 @@ class Predictor(BasePredictor):
                 logging.info(f"Frame {idx} - BGRA shape: {bgra.shape}")
                 logging.info(f"Frame {idx} - Alpha unique: {np.unique(bgra[:, :, 3])}")
             
-            ffmpeg.stdin.write(bgra.tobytes())
+            raw = bgra.tobytes()
+            assert len(raw) == w*h*4, f"Expected {w*h*4} bytes, got {len(raw)}"
+            ffmpeg.stdin.write(raw)
 
         ffmpeg.stdin.close()
         if ffmpeg.wait() != 0:
@@ -218,7 +219,6 @@ class Predictor(BasePredictor):
             "-filter_complex", "[0:v]format=yuva420p[vid]",
             "-map", "[vid]",
             "-c:v", "libvpx-vp9",
-            "-profile:v", "1",
             "-pix_fmt", "yuva420p",
             "-auto-alt-ref", "0",
             "-crf", "19",
