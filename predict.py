@@ -2,7 +2,7 @@ import logging
 import os
 import subprocess
 import tempfile
-
+import json
 import cv2
 import numpy as np
 import torch
@@ -234,7 +234,16 @@ class Predictor(BasePredictor):
 
         # 6) Composite
         rgb = cv2.bitwise_and(frame, frame, mask=alpha)
-        return np.dstack([rgb, alpha])
+        out  = np.dstack([rgb, alpha])   # shape should be (H, W, 4)
+
+        # ── Debug: print out the shape and channel ranges ───────────────
+        logging.info(f"apply_alpha_mask → out.shape = {out.shape}")    # e.g. (600,600,4)
+        b, g, r, a = cv2.split(out)
+        logging.info(f"  channel mins/maxs: B={b.min()}/{b.max()}, "
+                    f"G={g.min()}/{g.max()}, R={r.min()}/{r.max()}, A={a.min()}/{a.max()}")
+
+        return out
+
 
     @staticmethod
     def feather_alpha(alpha, iterations: int = 0):
