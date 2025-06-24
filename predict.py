@@ -118,29 +118,48 @@ class Predictor(BasePredictor):
 
         # 4️⃣ spawn FFmpeg encoder
         output_path = "/output.webm"
-        ffmpeg = subprocess.Popen(
-            [
-                ffmpeg_bin, "-y",
-                "-loglevel", "verbose",
-                "-thread_queue_size", "64",
-                "-framerate", str(fps),
-                "-f", "rawvideo", "-pix_fmt", "bgra",
-                "-s", f"{w}x{h}", "-i", "-",
-                "-thread_queue_size", "32",
-                "-i", str(input_video),
-                "-filter_complex", "[0:v]format=yuva420p[vid]",
-                "-map", "[vid]", "-map", "1:a?",
-                "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
-                "-auto-alt-ref", "0",
-                "-crf", str(crf), "-b:v", "0",
-                "-row-mt", "1", "-tile-columns", "2",
-                "-threads", "0",
-                "-metadata:s:v:0", "alpha_mode=1",
-                "-c:a", "copy",
-                output_path,
-            ],
-            stdin=subprocess.PIPE,
-        )
+        ffmpeg = subprocess.Popen([
+            ffmpeg_bin, "-y",
+
+            # ↑↑ Raw RGBA frames from Python ↑↑
+            "-thread_queue_size", "64",
+            "-framerate",       str(fps),
+            "-f",               "rawvideo",
+            "-pix_fmt",         "bgra",
+            "-s",               f"{w}x{h}",
+            "-i",               "-",        # <–– stdin pipe
+
+            # ↑↑ Original video for its audio ↑↑
+            "-thread_queue_size", "32",
+            "-i",                 str(input_video),
+
+            # convert only the pipe-feed (0:v) into yuva420p
+            "-filter_complex", "[0:v]format=yuva420p[vid]",
+
+            # map that video + the audio track
+            "-map", "[vid]",
+            "-map", "1:a?",
+
+            # VP9 encode with alpha
+            "-c:v",      "libvpx-vp9",
+            "-pix_fmt",  "yuva420p",
+            "-auto-alt-ref", "0",
+            "-crf",      str(crf),
+            "-b:v",      "0",
+
+            # threading & tiling tweaks
+            "-row-mt",       "1",
+            "-tile-columns", "2",
+            "-threads",      "0",
+
+            # tag it as alpha
+            "-metadata:s:v:0", "alpha_mode=1",
+
+            # passthru audio
+            "-c:a",      "copy",
+
+            output_path,
+        ], stdin=subprocess.PIPE)
 
         # 5️⃣ stream frames with live mask propagation
         prev_mask = None
@@ -175,18 +194,20 @@ class Predictor(BasePredictor):
         print(out)
 
 
-        # 1) Create a single 10×10 black BGRA frame
-        #    We use lavfi color→rawvideo→file
+        # 1) Create a single 10×10 black BGRA frame (rawvideo)
         proc1 = subprocess.run([
             ffmpeg_bin,
-            "-y",                        # overwrite
+            "-y",
             "-f", "lavfi",
-            "-i", "color=size=10x10:duration=0.1:color=black",
+            "-i", "color=size=10x10:duration=0.1:color=black:rate=30",
             "-pix_fmt", "bgra",
+            "-s", "10x10",
             "-t", "0.1",
+            "-c:v", "rawvideo",
+            "-f", "rawvideo",
             "black.bgra"
         ], check=True, capture_output=True, text=True)
-        print("Step 1 stdout/stderr:", proc1.stdout, proc1.stderr, file=sys.stderr)
+        print("STEP1 stderr:", proc1.stderr, file=sys.stderr)
 
         # 2) Encode that raw frame into VP9+alpha WebM
         proc2 = subprocess.run([
@@ -205,7 +226,7 @@ class Predictor(BasePredictor):
             "-b:v", "0",
             "test.webm"
         ], check=True, capture_output=True, text=True)
-        print("Step 2 stdout/stderr:", proc2.stdout, proc2.stderr, file=sys.stderr)
+        print("STEP2 stderr:", proc2.stderr, file=sys.stderr)
 
         # 3) Probe the resulting file for pix_fmt and alpha_mode
         proc3 = subprocess.run([
@@ -216,7 +237,7 @@ class Predictor(BasePredictor):
             "-of", "default=nw=1:nk=1",
             "test.webm"
         ], check=True, capture_output=True, text=True)
-        print("Probed output:\n" + proc3.stdout)
+        print("STEP3 probe output:\n" + proc3.stdout)
         
         # ── confirm that the file REALLY has an alpha plane ──────────────
         probe = subprocess.run(
