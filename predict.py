@@ -34,7 +34,7 @@ class Predictor(BasePredictor):
 
         # SAM-2 predictor
         self.checkpoint = "/src/sam2_hiera_base_plus.pt"
-        self.model_cfg  = "/src/sam2.1_hiera_b+.yaml"
+        self.model_cfg  = "sam2.1_hiera_b+.yaml"
         self.predictor = build_sam2_video_predictor(self.model_cfg, self.checkpoint)
         logging.info("✅ SAM-2 video predictor ready")
 
