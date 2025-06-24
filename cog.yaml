@@ -9,20 +9,28 @@ build:
     - libglib2.0-0
     - git
     - wget 
-    - nvidia-cuda-toolkit
 
   run:
+    - mkdir -p /src
+    # ─────────── Clean up apt cache ───────────
+    - apt-get clean && rm -rf /var/lib/apt/lists/*
     # ────────────────────────────────────────────────────────────────
     # 🛠️  Install a modern static FFmpeg with alpha support (early!)
     # ────────────────────────────────────────────────────────────────
     # 1) grab the John Van Sickle build:
+    # 1) Download static build
     - wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -O /tmp/ffmpeg-static.tar.xz
-    # 2) unpack just ffmpeg + ffprobe into vendor/bin:
-    - mkdir -p vendor/ffmpeg/bin
-    - tar --wildcards -xJf /tmp/ffmpeg-static.tar.xz --strip-components=1 -C vendor/ffmpeg/bin 'ffmpeg-*-static/ffmpeg' 'ffmpeg-*-static/ffprobe'
-    # 3) make them executable
-    - chmod +x vendor/ffmpeg/bin/ffmpeg vendor/ffmpeg/bin/ffprobe
-    - rm /tmp/ffmpeg-static.tar.xz
+
+    # 2) Unpack *everything* into a temp dir first
+    - mkdir -p /tmp/ffmpeg
+    - tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp/ffmpeg
+
+    # 3) Copy only ffmpeg & ffprobe to /src/vendor/ffmpeg/bin
+    - mkdir -p /src/vendor/ffmpeg/bin
+    - cp /tmp/ffmpeg/*/ffmpeg /tmp/ffmpeg/*/ffprobe /src/vendor/ffmpeg/bin/
+    - chmod +x /src/vendor/ffmpeg/bin/ffmpeg /src/vendor/ffmpeg/bin/ffprobe
+    - rm -rf /tmp/ffmpeg /tmp/ffmpeg-static.tar.xz
+    - ls -l /src/vendor/ffmpeg/bin
 
     - pip install --no-cache-dir --upgrade pip
     # Layer 1: PyTorch + TorchVision
@@ -35,7 +43,7 @@ build:
     - pip install --no-cache-dir mediapipe
 
     # Layer 4: download weights + YAML
-    - mkdir -p /src
+    
     - wget -q https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/main/sam2.1_hiera_base_plus.pt -O /src/sam2_hiera_base_plus.pt
     # Layer 4b: download YAML to repo root
     - wget -q https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/main/sam2.1_hiera_b+.yaml -O /src/sam2.1_hiera_b+.yaml
