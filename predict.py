@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 import subprocess
 import tempfile
 import json
@@ -120,6 +121,7 @@ class Predictor(BasePredictor):
         ffmpeg = subprocess.Popen(
             [
                 ffmpeg_bin, "-y",
+                "-loglevel", "verbose",
                 "-thread_queue_size", "64",
                 "-framerate", str(fps),
                 "-f", "rawvideo", "-pix_fmt", "bgra",
@@ -152,6 +154,12 @@ class Predictor(BasePredictor):
                 mask = prev_mask if prev_mask is not None else np.ones((h, w), np.uint8)
             prev_mask = mask
             bgra = self.apply_alpha_mask(frame, mask, soften_edge)
+            
+            # Debug every 30th frame
+            if idx % 30 == 0:
+                logging.info(f"Frame {idx} - BGRA shape: {bgra.shape}")
+                logging.info(f"Frame {idx} - Alpha unique: {np.unique(bgra[:, :, 3])}")
+            
             ffmpeg.stdin.write(bgra.tobytes())
 
         ffmpeg.stdin.close()
@@ -159,6 +167,56 @@ class Predictor(BasePredictor):
             raise RuntimeError("FFmpeg encoding failed")
 
         logging.info(f"✅ Finished → {output_path}")
+
+        out = subprocess.run(
+            [ffmpeg_bin, "-pix_fmts"],
+            capture_output=True, text=True
+        ).stdout
+        print(out)
+
+
+        # 1) Create a single 10×10 black BGRA frame
+        #    We use lavfi color→rawvideo→file
+        proc1 = subprocess.run([
+            ffmpeg_bin,
+            "-y",                        # overwrite
+            "-f", "lavfi",
+            "-i", "color=size=10x10:duration=0.1:color=black",
+            "-pix_fmt", "bgra",
+            "-t", "0.1",
+            "black.bgra"
+        ], check=True, capture_output=True, text=True)
+        print("Step 1 stdout/stderr:", proc1.stdout, proc1.stderr, file=sys.stderr)
+
+        # 2) Encode that raw frame into VP9+alpha WebM
+        proc2 = subprocess.run([
+            ffmpeg_bin,
+            "-y",
+            "-f", "rawvideo",
+            "-pix_fmt", "bgra",
+            "-s", "10x10",
+            "-i", "black.bgra",
+            "-filter_complex", "[0:v]format=yuva420p[vid]",
+            "-map", "[vid]",
+            "-c:v", "libvpx-vp9",
+            "-pix_fmt", "yuva420p",
+            "-auto-alt-ref", "0",
+            "-crf", "19",
+            "-b:v", "0",
+            "test.webm"
+        ], check=True, capture_output=True, text=True)
+        print("Step 2 stdout/stderr:", proc2.stdout, proc2.stderr, file=sys.stderr)
+
+        # 3) Probe the resulting file for pix_fmt and alpha_mode
+        proc3 = subprocess.run([
+            ffprobe_bin,
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=pix_fmt,alpha_mode",
+            "-of", "default=nw=1:nk=1",
+            "test.webm"
+        ], check=True, capture_output=True, text=True)
+        print("Probed output:\n" + proc3.stdout)
         
         # ── confirm that the file REALLY has an alpha plane ──────────────
         probe = subprocess.run(
