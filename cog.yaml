@@ -35,6 +35,7 @@ build:
     - pip install --no-cache-dir mediapipe
 
     # Layer 4: download weights + YAML
+    - mkdir -p /src
     - wget -q https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/main/sam2.1_hiera_base_plus.pt -O /src/sam2_hiera_base_plus.pt
     # Layer 4b: download YAML to repo root
     - wget -q https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/main/sam2.1_hiera_b+.yaml -O /src/sam2.1_hiera_b+.yaml
