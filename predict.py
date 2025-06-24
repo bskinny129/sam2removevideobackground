@@ -197,32 +197,41 @@ class Predictor(BasePredictor):
         print(out)
 
 
-        # 1) Create a single 10×10 black BGRA frame (rawvideo)
+        # 1) Generate a 10×10 raw BGRA frame
+        #    • all pixels transparent black  (black@0.0)
+        #    • draw a single opaque black pixel at (0,0) to force alpha variation
         proc1 = subprocess.run([
             ffmpeg_bin, "-y",
-                "-f", "lavfi",
-                "-i", "color=size=10x10:duration=0.1:color=black@0.0:rate=30",
-                "-pix_fmt", "bgra", "-s", "10x10", "-t", "0.1",
-                "-c:v", "rawvideo", "-f", "rawvideo",
-                "black.bgra"
+            "-f", "lavfi",
+            "-i", "color=size=10x10:duration=0.1:color=black@0.0:rate=30",
+            "-vf",  "format=bgra,drawbox=x=0:y=0:w=1:h=1:c=black@1:t=fill",
+            "-pix_fmt", "bgra",
+            "-t",  "0.1",
+            "-f", "rawvideo",
+            "black.bgra"
         ], check=True, capture_output=True, text=True)
         print("STEP1 stderr:", proc1.stderr, file=sys.stderr)
 
-        # 2) Encode that raw frame into VP9+alpha WebM
+        # 2) Encode that raw frame to VP9 + alpha
         proc2 = subprocess.run([
-            ffmpeg_bin,
-            "-y",
+            ffmpeg_bin, "-y",
             "-f", "rawvideo",
             "-pix_fmt", "bgra",
-            "-s", "10x10",
-            "-i", "black.bgra",
-            "-filter_complex", "[0:v]format=yuva420p[vid]",
-            "-map", "[vid]",
+            "-s",  "10x10",
+            "-r",  "30",                 # rawvideo demuxer default is 25 → be explicit
+            "-i",  "black.bgra",
+
+            "-vf", "format=yuva420p",    # convert to 4:2:0 + alpha
+
             "-c:v", "libvpx-vp9",
             "-pix_fmt", "yuva420p",
             "-auto-alt-ref", "0",
             "-crf", "19",
             "-b:v", "0",
+
+            # set container flag telling players an alpha plane is present
+            "-metadata:s:v:0", "alpha_mode=1",
+
             "test.webm"
         ], check=True, capture_output=True, text=True)
         print("STEP2 stderr:", proc2.stderr, file=sys.stderr)
