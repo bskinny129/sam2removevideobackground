@@ -106,6 +106,15 @@ class Predictor(BasePredictor):
         ffmpeg_bin = os.path.join(os.getcwd(), "vendor", "ffmpeg", "bin", "ffmpeg")
         ffprobe_bin = os.path.join(os.getcwd(), "vendor", "ffmpeg", "bin", "ffprobe")
 
+        version_proc = subprocess.Popen(
+            [ffmpeg_bin, "-version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True
+        )
+        out, _ = version_proc.communicate()
+        logging.info("FFmpeg version info:\n%s", out)
+
         # 4️⃣ spawn FFmpeg encoder
         output_path = "/output.webm"
         ffmpeg = subprocess.Popen(
@@ -117,8 +126,8 @@ class Predictor(BasePredictor):
                 "-s", f"{w}x{h}", "-i", "-",
                 "-thread_queue_size", "32",
                 "-i", str(input_video),
-                "-vf", "format=yuva420p",
-                "-map", "0:v", "-map", "1:a?",
+                "-filter_complex", "[0:v]format=yuva420p[vid]",
+                "-map", "[vid]", "-map", "1:a?",
                 "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
                 "-auto-alt-ref", "0",
                 "-crf", str(crf), "-b:v", "0",
@@ -211,7 +220,8 @@ class Predictor(BasePredictor):
 
     def apply_alpha_mask(self, frame, mask, soften_edge):
         # 1) Binary mask from SAM logits
-        bin_mask = (mask.squeeze() > 0.4).astype(np.uint8)
+        prob = 1 / (1 + np.exp(-mask))        # sigmoid
+        bin_mask = (prob.squeeze() > 0.4).astype(np.uint8)
 
         # 2) Resize to full frame
         bin_mask = cv2.resize(bin_mask, (frame.shape[1], frame.shape[0]), cv2.INTER_NEAREST)
@@ -224,9 +234,9 @@ class Predictor(BasePredictor):
         alpha = cv2.erode(alpha, kernel_erode, iterations=2)
 
         # ── make sure at least ONE pixel is transparent ───────────────
-        if alpha.max() == 255 and alpha.min() == 255:        # all opaque
-            alpha[0, 0] = 0                                  # poke a hole
-            logging.info("🔍 Poked a hole in the alpha mask")
+        if alpha.max() == alpha.min():        # constant plane (all 0 or all 255)
+            alpha[0, 0] = 255 if alpha.max() ==   0 else 0
+            logging.info("🔍 Poked variation into alpha")
 
         # 5) Optional feathering to soften the now-cleaner edges
         if soften_edge:
