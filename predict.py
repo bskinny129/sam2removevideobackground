@@ -172,6 +172,11 @@ class Predictor(BasePredictor):
         info = probe.stdout
         logging.info("ffprobe stream info -> %s", info)
         data = json.loads(info)["streams"][0]
+
+        logging.info(f"Output shape: {bgra.shape}")  # Should be (height, width, 4)
+        logging.info(f"Alpha unique values: {np.unique(bgra[:, :, 3])}")  # Should show [0, 255] or similar
+        logging.info(f"Alpha min/max: {bgra[:, :, 3].min()}/{bgra[:, :, 3].max()}")  # Should be 0/255
+
         assert data["pix_fmt"].startswith("yuva"), "❌ alpha plane missing!"
         assert data.get("alpha_mode") == "1",      "❌ alpha_mode tag wrong!"
 
@@ -219,6 +224,9 @@ class Predictor(BasePredictor):
         return clean
 
     def apply_alpha_mask(self, frame, mask, soften_edge):
+        # mask: raw SAM logits array
+        logging.info("raw SAM logits → min=%.3f max=%.3f", mask.min(), mask.max())
+
         # 1) Binary mask from SAM logits
         prob = 1 / (1 + np.exp(-mask))        # sigmoid
         bin_mask = (prob.squeeze() > 0.4).astype(np.uint8)
@@ -235,7 +243,7 @@ class Predictor(BasePredictor):
 
         # ── make sure at least ONE pixel is transparent ───────────────
         if alpha.max() == alpha.min():        # constant plane (all 0 or all 255)
-            alpha[0, 0] = 255 if alpha.max() ==   0 else 0
+            alpha[0, 0] = 255 if alpha.max() == 0 else 0
             logging.info("🔍 Poked variation into alpha")
 
         # 5) Optional feathering to soften the now-cleaner edges
@@ -244,14 +252,7 @@ class Predictor(BasePredictor):
 
         # 6) Composite
         rgb = cv2.bitwise_and(frame, frame, mask=alpha)
-        out  = np.dstack([rgb, alpha])   # shape should be (H, W, 4)
-
-        # ── Debug: print out the shape and channel ranges ───────────────
-        logging.info(f"apply_alpha_mask → out.shape = {out.shape}")    # e.g. (600,600,4)
-        b, g, r, a = cv2.split(out)
-        logging.info(f"  channel mins/maxs: B={b.min()}/{b.max()}, "
-                    f"G={g.min()}/{g.max()}, R={r.min()}/{r.max()}, A={a.min()}/{a.max()}")
-
+        out  = np.dstack([rgb, alpha])
         return out
 
 
