@@ -151,21 +151,20 @@ class Predictor(BasePredictor):
 
         logging.info(f"✅ Finished → {output_path}")
         
-        # ── probe the output for its pixel format ───────────────────────────────────
-        try:
-            # run ffprobe to get the pix_fmt
-            result = subprocess.run([
-                ffprobe_bin,
-                "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=pix_fmt,codec_name,width,height",
-                "-of", "default=noprint_wrappers=1:nokey=1",
-                output_path
-            ], capture_output=True, text=True, check=True)
-            pix_fmt = result.stdout.strip()
-            logging.info(f"🔍 Output pixel format: {pix_fmt}")
-        except subprocess.CalledProcessError as e:
-            logging.warning(f"⚠️  ffprobe failed: {e.stderr.strip() if e.stderr else e}")
+        # ── confirm that the file REALLY has an alpha plane ──────────────
+        probe = subprocess.run(
+            [
+                ffprobe_bin, "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=pix_fmt,alpha_mode,width,height",
+                "-of", "json", output_path
+            ],
+            text=True, check=True, capture_output=True,
+        )
+        info = probe.stdout
+        logging.info("ffprobe stream info -> %s", info)
+        data = json.loads(info)["streams"][0]
+        assert data["pix_fmt"].startswith("yuva"), "❌ alpha plane missing!"
+        assert data.get("alpha_mode") == "1",      "❌ alpha_mode tag wrong!"
 
         return Path(output_path)
 
@@ -223,6 +222,11 @@ class Predictor(BasePredictor):
         # 4) Small erosion to pull edges inward and reduce halos
         kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
         alpha = cv2.erode(alpha, kernel_erode, iterations=2)
+
+        # ── make sure at least ONE pixel is transparent ───────────────
+        if alpha.max() == 255 and alpha.min() == 255:        # all opaque
+            alpha[0, 0] = 0                                  # poke a hole
+            logging.info("🔍 Poked a hole in the alpha mask")
 
         # 5) Optional feathering to soften the now-cleaner edges
         if soften_edge:
