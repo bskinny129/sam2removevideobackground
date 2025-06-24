@@ -142,6 +142,7 @@ class Predictor(BasePredictor):
 
             # VP9 encode with alpha
             "-c:v",      "libvpx-vp9",
+            "-profile:v", "1",
             "-pix_fmt",  "yuva420p",
             "-auto-alt-ref", "0",
             "-crf",      str(crf),
@@ -196,16 +197,12 @@ class Predictor(BasePredictor):
 
         # 1) Create a single 10×10 black BGRA frame (rawvideo)
         proc1 = subprocess.run([
-            ffmpeg_bin,
-            "-y",
-            "-f", "lavfi",
-            "-i", "color=size=10x10:duration=0.1:color=black:rate=30",
-            "-pix_fmt", "bgra",
-            "-s", "10x10",
-            "-t", "0.1",
-            "-c:v", "rawvideo",
-            "-f", "rawvideo",
-            "black.bgra"
+            ffmpeg_bin, "-y",
+                "-f", "lavfi",
+                "-i", "color=size=10x10:duration=0.1:color=black@0.0:rate=30",
+                "-pix_fmt", "bgra", "-s", "10x10", "-t", "0.1",
+                "-c:v", "rawvideo", "-f", "rawvideo",
+                "black.bgra"
         ], check=True, capture_output=True, text=True)
         print("STEP1 stderr:", proc1.stderr, file=sys.stderr)
 
@@ -220,6 +217,7 @@ class Predictor(BasePredictor):
             "-filter_complex", "[0:v]format=yuva420p[vid]",
             "-map", "[vid]",
             "-c:v", "libvpx-vp9",
+            "-profile:v", "1",
             "-pix_fmt", "yuva420p",
             "-auto-alt-ref", "0",
             "-crf", "19",
@@ -240,11 +238,12 @@ class Predictor(BasePredictor):
         print("STEP3 probe output:\n" + proc3.stdout)
         
         # ── confirm that the file REALLY has an alpha plane ──────────────
+        output_path2 = "/output.webm"
         probe = subprocess.run(
             [
                 ffprobe_bin, "-v", "error", "-select_streams", "v:0",
                 "-show_entries", "stream=pix_fmt,alpha_mode,width,height",
-                "-of", "json", output_path
+                "-of", "json", output_path2
             ],
             text=True, check=True, capture_output=True,
         )
