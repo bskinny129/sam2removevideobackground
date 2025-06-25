@@ -1,13 +1,11 @@
 import logging
 import os
-import sys
 import subprocess
 import tempfile
-import json
 import cv2
 import numpy as np
 import torch
-from cog import BasePredictor, Input, Path              # ← use cog.Path
+from cog import BasePredictor, Input, Path
 from sam2.build_sam import build_sam2_video_predictor
 
 import mediapipe as mp
@@ -59,7 +57,7 @@ class Predictor(BasePredictor):
         soften_edge: bool = Input(description="Feather mask edge", default=True),
     ) -> Path:                                           # ← return cog.Path
         # warm-up shortcut
-        if input_video.name == "warmup.mp4":
+        if "warmup.mp4" in input_video.name:
             logging.info("Warm-up request – echoing source")
             return input_video
 
@@ -75,7 +73,8 @@ class Predictor(BasePredictor):
 
         n_frames = len(frames)
         if n_frames == 0:
-            raise RuntimeError("No decodable frames in input video")
+            logging.warning("No decodable frames in input video - returning original")
+            return input_video
         h, w = frames[0].shape[:2]
         logging.info(f"Loaded {n_frames} frames (≈{fps:.2f} fps)")
 
@@ -105,62 +104,32 @@ class Predictor(BasePredictor):
         prop_iter = iter(self.predictor.propagate_in_video(state))
 
         ffmpeg_bin = os.path.join(os.getcwd(), "vendor", "ffmpeg", "bin", "ffmpeg")
-        ffprobe_bin = os.path.join(os.getcwd(), "vendor", "ffmpeg", "bin", "ffprobe")
-
-        version_proc = subprocess.Popen(
-            [ffmpeg_bin, "-version"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True
-        )
-        out, _ = version_proc.communicate()
-        logging.info("FFmpeg version info:\n%s", out)
+        #ffprobe_bin = os.path.join(os.getcwd(), "vendor", "ffmpeg", "bin", "ffprobe")
 
         # 4️⃣ spawn FFmpeg encoder
         output_path = "/output.webm"
-        ffmpeg = subprocess.Popen([
-            ffmpeg_bin, "-y",
-
-            # ↑↑ Raw RGBA frames from Python ↑↑
-            "-thread_queue_size", "64",
-            "-framerate",       str(fps),
-            "-f",               "rawvideo",
-            "-pix_fmt",         "bgra",
-            "-s",               f"{w}x{h}",
-            "-i",               "-",        # <–– stdin pipe
-
-            # ↑↑ Original video for its audio ↑↑
-            #"-thread_queue_size", "32",
-            #"-i",                 str(input_video),
-
-            # convert only the pipe-feed (0:v) into yuva420p
-            "-filter_complex", "[0:v]format=yuva420p[vid]",
-
-            # map that video + the audio track
-            "-map", "[vid]",
-            #"-map", "1:a?",
-            "-an", #drop audio
-
-            # VP9 encode with alpha
-            "-c:v",      "libvpx-vp9",
-            "-pix_fmt",  "yuva420p",
-            "-auto-alt-ref", "0",
-            "-crf",      str(crf),
-            "-b:v",      "0",
-
-            # threading & tiling tweaks
-            "-row-mt",       "1",
-            "-tile-columns", "2",
-            "-threads",      "0",
-
-            # tag it as alpha
-            "-metadata:s:v:0", "alpha_mode=1",
-
-            # passthru audio
-            #"-c:a",      "copy",
-
-            output_path,
-        ], stdin=subprocess.PIPE)
+        ffmpeg = subprocess.Popen(
+            [
+                ffmpeg_bin, "-y",
+                "-thread_queue_size", "64",
+                "-framerate", str(fps),
+                "-f", "rawvideo", "-pix_fmt", "bgra",
+                "-s", f"{w}x{h}", "-i", "-",
+                "-thread_queue_size", "32",
+                "-i", str(input_video),
+                "-vf", "format=yuva420p",
+                "-map", "0:v", "-map", "1:a?",
+                "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
+                "-auto-alt-ref", "0",
+                "-crf", str(crf), "-b:v", "0",
+                "-row-mt", "1", "-tile-columns", "2",
+                "-threads", "0",
+                "-metadata:s:v:0", "alpha_mode=1",
+                "-c:a", "copy",
+                output_path,
+            ],
+            stdin=subprocess.PIPE,
+        )
 
         # 5️⃣ stream frames with live mask propagation
         prev_mask = None
@@ -175,13 +144,7 @@ class Predictor(BasePredictor):
             prev_mask = mask
             bgra = self.apply_alpha_mask(frame, mask, soften_edge)
             
-            # Debug every 30th frame
-            if idx % 30 == 0:
-                logging.info(f"Frame {idx} - BGRA shape: {bgra.shape}")
-                logging.info(f"Frame {idx} - Alpha unique: {np.unique(bgra[:, :, 3])}")
-            
             raw = bgra.tobytes()
-            assert len(raw) == w*h*4, f"Expected {w*h*4} bytes, got {len(raw)}"
             ffmpeg.stdin.write(raw)
 
         ffmpeg.stdin.close()
@@ -189,84 +152,6 @@ class Predictor(BasePredictor):
             raise RuntimeError("FFmpeg encoding failed")
 
         logging.info(f"✅ Finished → {output_path}")
-
-        out = subprocess.run(
-            [ffmpeg_bin, "-pix_fmts"],
-            capture_output=True, text=True
-        ).stdout
-        print(out)
-
-
-        # 1) Generate a 10×10 raw BGRA frame
-        #    • all pixels transparent black  (black@0.0)
-        #    • draw a single opaque black pixel at (0,0) to force alpha variation
-        proc1 = subprocess.run([
-            ffmpeg_bin, "-y",
-            "-f", "lavfi",
-            "-i", "color=size=10x10:duration=0.1:color=black@0.0:rate=30",
-            "-vf",  "format=bgra,drawbox=x=0:y=0:w=1:h=1:c=black@1:t=fill",
-            "-pix_fmt", "bgra",
-            "-t",  "0.1",
-            "-f", "rawvideo",
-            "black.bgra"
-        ], check=True, capture_output=True, text=True)
-        print("STEP1 stderr:", proc1.stderr, file=sys.stderr)
-
-        # 2) Encode that raw frame to VP9 + alpha
-        proc2 = subprocess.run([
-            ffmpeg_bin, "-y",
-            "-f", "rawvideo",
-            "-pix_fmt", "bgra",
-            "-s",  "10x10",
-            "-r",  "30",                 # rawvideo demuxer default is 25 → be explicit
-            "-i",  "black.bgra",
-
-            "-vf", "format=yuva420p",    # convert to 4:2:0 + alpha
-
-            "-c:v", "libvpx-vp9",
-            "-pix_fmt", "yuva420p",
-            "-auto-alt-ref", "0",
-            "-crf", "19",
-            "-b:v", "0",
-
-            # set container flag telling players an alpha plane is present
-            "-metadata:s:v:0", "alpha_mode=1",
-
-            "test.webm"
-        ], check=True, capture_output=True, text=True)
-        print("STEP2 stderr:", proc2.stderr, file=sys.stderr)
-
-        # 3) Probe the resulting file for pix_fmt and alpha_mode
-        proc3 = subprocess.run([
-            ffprobe_bin,
-            "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=pix_fmt,alpha_mode",
-            "-of", "default=nw=1:nk=1",
-            "test.webm"
-        ], check=True, capture_output=True, text=True)
-        print("STEP3 probe output:\n" + proc3.stdout)
-        
-        # ── confirm that the file REALLY has an alpha plane ──────────────
-        output_path2 = "/output.webm"
-        probe = subprocess.run(
-            [
-                ffprobe_bin, "-v", "error", "-select_streams", "v:0",
-                "-show_entries", "stream=pix_fmt,alpha_mode,width,height",
-                "-of", "json", output_path2
-            ],
-            text=True, check=True, capture_output=True,
-        )
-        info = probe.stdout
-        logging.info("ffprobe stream info -> %s", info)
-        data = json.loads(info)["streams"][0]
-
-        logging.info(f"Output shape: {bgra.shape}")  # Should be (height, width, 4)
-        logging.info(f"Alpha unique values: {np.unique(bgra[:, :, 3])}")  # Should show [0, 255] or similar
-        logging.info(f"Alpha min/max: {bgra[:, :, 3].min()}/{bgra[:, :, 3].max()}")  # Should be 0/255
-
-        assert data["pix_fmt"].startswith("yuva"), "❌ alpha plane missing!"
-        assert data.get("alpha_mode") == "1",      "❌ alpha_mode tag wrong!"
 
         return Path(output_path)
 
@@ -311,9 +196,10 @@ class Predictor(BasePredictor):
         # 5) return the clean binary mask directly
         return clean
 
+
     def apply_alpha_mask(self, frame, mask, soften_edge):
         # mask: raw SAM logits array
-        logging.info("raw SAM logits → min=%.3f max=%.3f", mask.min(), mask.max())
+        #logging.info("raw SAM logits → min=%.3f max=%.3f", mask.min(), mask.max())
 
         # 1) Binary mask from SAM logits
         prob = 1 / (1 + np.exp(-mask))        # sigmoid
