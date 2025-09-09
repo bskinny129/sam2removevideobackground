@@ -55,8 +55,8 @@ class Predictor(BasePredictor):
         ),
         crf: int = Input(description="VP9 CRF", default=19, ge=1, le=32),
         soften_edge: bool = Input(description="Feather mask edge", default=True),
-        warmup_seconds: float = Input(description="Warmup duration for stabilization", default=0.8, ge=0.0, le=3.0),
-        warmup_strictness: float = Input(description="0..1 strength of early smoothing", default=0.7, ge=0.0, le=1.0),
+        warmup_seconds: float = Input(description="Warmup duration for stabilization", default=0.25, ge=0.0, le=3.0),
+        warmup_strictness: float = Input(description="0..1 strength of early smoothing", default=0.0, ge=0.0, le=1.0),
     ) -> Path:                                           # ← return cog.Path
         # warm-up shortcut
         if "warmup.mp4" in input_video.name:
@@ -89,8 +89,8 @@ class Predictor(BasePredictor):
         sampled_idxs = list(range(0, warmup_frames)) + list(range(warmup_frames, n_frames, mask_every_n_frames))
         # Ensure uniqueness and sorted order
         sampled_idxs = sorted(set(sampled_idxs))
-        # Seed more frames at high quality proportionally to warmup length
-        seed_highq = max(3, min(len(sampled_idxs), int(round(0.5 * (warmup_frames or fps)))))
+        # Rapid start: seed just the first frame to let SAM adapt quickly
+        seed_highq = 1
         for j, orig_idx in enumerate(sampled_idxs):
             q = 100 if j < seed_highq else jpeg_quality
             cv2.imwrite(
@@ -108,7 +108,7 @@ class Predictor(BasePredictor):
         seed_frames = min(seed_highq, len(sampled_idxs))
         for frame_idx in range(seed_frames):
             self.predictor.add_new_mask(state, frame_idx, 1, seed_mask)
-        logging.info(f"Seeded {seed_frames} frames with portrait mask (high-q=")
+        logging.info(f"Seeded {seed_frames} frames with portrait mask")
                 
         prop_iter = iter(self.predictor.propagate_in_video(state))
 
