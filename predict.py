@@ -101,9 +101,8 @@ class Predictor(BasePredictor):
 
         # 3️⃣ seed SAM-2 with refined mask on multiple early frames
         state = self.predictor.init_state(video_path=tmp_dir)
-        # Generate the seed mask from a later, more stable frame (e.g., the 4th)
-        seed_frame_idx = min(3, n_frames - 1)
-        seed_mask = self.get_portrait_mask(frames[seed_frame_idx], 0.3)
+        # Use frame 0 for seeding to keep internal propagation aligned
+        seed_mask = self.get_portrait_mask(frames[0], 0.3)
         
         # Add the same high-quality mask to more early frames for better temporal consistency
         seed_frames = min(seed_highq, len(sampled_idxs))
