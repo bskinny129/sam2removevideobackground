@@ -41,6 +41,8 @@ build:
     - pip install --no-cache-dir opencv-python==4.7.0.72 numpy==1.24.4 timm==0.6.13
     # Layer 3b: portrait segmentation
     - pip install --no-cache-dir mediapipe
+    # Layer 3c: Replicate client for SA2VA arms segmentation
+    - pip install --no-cache-dir replicate
 
     # Layer 4: download weights + YAML
     

@@ -55,6 +55,8 @@ class Predictor(BasePredictor):
         ),
         crf: int = Input(description="VP9 CRF", default=19, ge=1, le=32),
         soften_edge: bool = Input(description="Feather mask edge", default=True),
+        warmup_seconds: float = Input(description="Warmup duration for stabilization", default=0.8, ge=0.0, le=3.0),
+        warmup_strictness: float = Input(description="0..1 strength of early smoothing", default=0.7, ge=0.0, le=1.0),
     ) -> Path:                                           # ← return cog.Path
         # warm-up shortcut
         if "warmup.mp4" in input_video.name:
@@ -80,10 +82,17 @@ class Predictor(BasePredictor):
 
         # 2️⃣ write sampled JPEGs for SAM-2
         tmp_dir = tempfile.mkdtemp(prefix="sam2_frames_")
-        sampled_idxs = list(range(0, n_frames, mask_every_n_frames))
+        # During warmup, effectively sample every frame to stabilize propagation
+        warmup_frames = int(round(warmup_seconds * fps))
+        warmup_frames = max(0, min(n_frames, warmup_frames))
+        # Build dynamic stride: 1 during warmup, user stride after
+        sampled_idxs = list(range(0, warmup_frames)) + list(range(warmup_frames, n_frames, mask_every_n_frames))
+        # Ensure uniqueness and sorted order
+        sampled_idxs = sorted(set(sampled_idxs))
+        # Seed more frames at high quality proportionally to warmup length
+        seed_highq = max(3, min(len(sampled_idxs), int(round(0.5 * (warmup_frames or fps)))))
         for j, orig_idx in enumerate(sampled_idxs):
-            # Use max quality for first 3 frames (seed frames) for better SAM-2 results
-            q = 100 if j < 3 else jpeg_quality
+            q = 100 if j < seed_highq else jpeg_quality
             cv2.imwrite(
                 os.path.join(tmp_dir, f"{j:06d}.jpg"),
                 frames[orig_idx],
@@ -95,11 +104,11 @@ class Predictor(BasePredictor):
         state = self.predictor.init_state(video_path=tmp_dir)
         seed_mask = self.get_portrait_mask(frames[0], 0.3)
         
-        # Add the same high-quality mask to first 3 frames for better temporal consistency
-        seed_frames = min(3, len(sampled_idxs))
+        # Add the same high-quality mask to more early frames for better temporal consistency
+        seed_frames = min(seed_highq, len(sampled_idxs))
         for frame_idx in range(seed_frames):
             self.predictor.add_new_mask(state, frame_idx, 1, seed_mask)
-        logging.info(f"Seeded {seed_frames} frames with portrait mask")
+        logging.info(f"Seeded {seed_frames} frames with portrait mask (high-q=")
                 
         prop_iter = iter(self.predictor.propagate_in_video(state))
 
@@ -134,15 +143,37 @@ class Predictor(BasePredictor):
         # 5️⃣ stream frames with live mask propagation
         prev_mask = None
         ptr = 0
+        # warmup smoothing state
+        prev_logits = None
         for idx, frame in enumerate(frames):
             if ptr < len(sampled_idxs) and idx == sampled_idxs[ptr]:
                 _, _, logits = next(prop_iter)
-                mask = logits[0].cpu().numpy()
+                raw_logits = logits[0].cpu().numpy()
+                # Apply temporal smoothing during warmup
+                if warmup_frames > 0 and idx < warmup_frames:
+                    # strength ramps from warmup_strictness → 0 over warmup
+                    t = idx / max(1, warmup_frames - 1)
+                    strength = warmup_strictness * (1.0 - t)
+                    if prev_logits is None:
+                        smoothed = raw_logits
+                    else:
+                        smoothed = strength * prev_logits + (1.0 - strength) * raw_logits
+                    prev_logits = smoothed
+                    mask = smoothed
+                else:
+                    prev_logits = raw_logits
+                    mask = raw_logits
                 ptr += 1
             else:
                 mask = prev_mask if prev_mask is not None else np.ones((h, w), np.uint8)
             prev_mask = mask
-            bgra = self.apply_alpha_mask(frame, mask, soften_edge)
+            # Ramp the binarization threshold during warmup from 0.5 → 0.4
+            if warmup_frames > 0 and idx < warmup_frames:
+                t = idx / max(1, warmup_frames - 1)
+                thr = 0.5 - 0.1 * t
+            else:
+                thr = 0.4
+            bgra = self.apply_alpha_mask(frame, mask, soften_edge, thresh=thr)
             
             raw = bgra.tobytes()
             ffmpeg.stdin.write(raw)
@@ -197,13 +228,13 @@ class Predictor(BasePredictor):
         return clean
 
 
-    def apply_alpha_mask(self, frame, mask, soften_edge):
+    def apply_alpha_mask(self, frame, mask, soften_edge, thresh=0.4):
         # mask: raw SAM logits array
         #logging.info("raw SAM logits → min=%.3f max=%.3f", mask.min(), mask.max())
 
         # 1) Binary mask from SAM logits
         prob = 1 / (1 + np.exp(-mask))        # sigmoid
-        bin_mask = (prob.squeeze() > 0.4).astype(np.uint8)
+        bin_mask = (prob.squeeze() > thresh).astype(np.uint8)
 
         # 2) Resize to full frame
         bin_mask = cv2.resize(bin_mask, (frame.shape[1], frame.shape[0]), cv2.INTER_NEAREST)
@@ -236,3 +267,4 @@ class Predictor(BasePredictor):
         dilated = cv2.dilate(alpha, kernel, iterations=iterations)
         blurred = cv2.GaussianBlur(dilated, (5, 5), 0)
         return np.clip(blurred, 0, 255).astype(np.uint8)
+3
