@@ -55,8 +55,7 @@ class Predictor(BasePredictor):
         ),
         crf: int = Input(description="VP9 CRF", default=19, ge=1, le=32),
         soften_edge: bool = Input(description="Feather mask edge", default=True),
-        warmup_seconds: float = Input(description="Warmup duration for stabilization", default=0.25, ge=0.0, le=3.0),
-        warmup_strictness: float = Input(description="0..1 strength of early smoothing", default=0.0, ge=0.0, le=1.0),
+        warmup_seconds: float = Input(description="Warmup duration for stabilization", default=0.4, ge=0.0, le=3.0),
     ) -> Path:                                           # ← return cog.Path
         # warm-up shortcut
         if "warmup.mp4" in input_video.name:
@@ -77,6 +76,9 @@ class Predictor(BasePredictor):
         if n_frames == 0:
             logging.warning("No decodable frames in input video - returning original")
             return input_video
+        # Replace the first frame with the second to avoid a rough initial mask
+        if n_frames >= 2:
+            frames[0] = frames[1].copy()
         h, w = frames[0].shape[:2]
         logging.info(f"Loaded {n_frames} frames (≈{fps:.2f} fps)")
 
@@ -153,7 +155,7 @@ class Predictor(BasePredictor):
                 if warmup_frames > 0 and idx < warmup_frames:
                     # strength ramps from warmup_strictness → 0 over warmup
                     t = idx / max(1, warmup_frames - 1)
-                    strength = warmup_strictness * (1.0 - t)
+                    strength = 0.0 * (1.0 - t)
                     if prev_logits is None:
                         smoothed = raw_logits
                     else:
