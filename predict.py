@@ -76,11 +76,6 @@ class Predictor(BasePredictor):
         if n_frames == 0:
             logging.warning("No decodable frames in input video - returning original")
             return input_video
-        # Replace the first three frames with the fourth to avoid a rough initial mask
-        if n_frames >= 4:
-            frames[0] = frames[3].copy()
-            frames[1] = frames[3].copy()
-            frames[2] = frames[3].copy()
         h, w = frames[0].shape[:2]
         logging.info(f"Loaded {n_frames} frames (≈{fps:.2f} fps)")
 
@@ -106,7 +101,9 @@ class Predictor(BasePredictor):
 
         # 3️⃣ seed SAM-2 with refined mask on multiple early frames
         state = self.predictor.init_state(video_path=tmp_dir)
-        seed_mask = self.get_portrait_mask(frames[0], 0.3)
+        # Generate the seed mask from a later, more stable frame (e.g., the 4th)
+        seed_frame_idx = min(3, n_frames - 1)
+        seed_mask = self.get_portrait_mask(frames[seed_frame_idx], 0.3)
         
         # Add the same high-quality mask to more early frames for better temporal consistency
         seed_frames = min(seed_highq, len(sampled_idxs))
@@ -144,13 +141,27 @@ class Predictor(BasePredictor):
             stdin=subprocess.PIPE,
         )
 
+        # Prefetch logits up to the first good frame (index 3) and cache them
+        first_good_idx = min(3, n_frames - 1)
+        cached_logits = {}
+        prefetch_ptr = 0
+        for k, sidx in enumerate(sampled_idxs):
+            if sidx <= first_good_idx:
+                _, _, lg = next(prop_iter)
+                cached_logits[sidx] = lg[0].cpu().numpy()
+                prefetch_ptr = k + 1
+            else:
+                break
+
         # 5️⃣ stream frames with live mask propagation
         prev_mask = None
-        ptr = 0
+        ptr = prefetch_ptr
         # warmup smoothing state
         prev_logits = None
         for idx, frame in enumerate(frames):
-            if ptr < len(sampled_idxs) and idx == sampled_idxs[ptr]:
+            if idx in cached_logits:
+                mask = cached_logits[idx]
+            elif ptr < len(sampled_idxs) and idx == sampled_idxs[ptr]:
                 _, _, logits = next(prop_iter)
                 raw_logits = logits[0].cpu().numpy()
                 # Apply temporal smoothing during warmup
@@ -170,6 +181,13 @@ class Predictor(BasePredictor):
                 ptr += 1
             else:
                 mask = prev_mask if prev_mask is not None else np.ones((h, w), np.uint8)
+
+            # Force-copy the good mask from frame 3 to frames 0..2
+            if idx < first_good_idx:
+                good_mask = cached_logits.get(first_good_idx)
+                if good_mask is not None:
+                    mask = good_mask
+
             prev_mask = mask
             # Ramp the binarization threshold during warmup from 0.5 → 0.4
             if warmup_frames > 0 and idx < warmup_frames:
