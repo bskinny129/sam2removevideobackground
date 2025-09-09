@@ -76,9 +76,10 @@ class Predictor(BasePredictor):
         if n_frames == 0:
             logging.warning("No decodable frames in input video - returning original")
             return input_video
-        # Replace the first frame with the second to avoid a rough initial mask
-        if n_frames >= 2:
-            frames[0] = frames[1].copy()
+        # Replace the first two frames with the third to avoid a rough initial mask
+        if n_frames >= 3:
+            frames[0] = frames[2].copy()
+            frames[1] = frames[2].copy()
         h, w = frames[0].shape[:2]
         logging.info(f"Loaded {n_frames} frames (≈{fps:.2f} fps)")
 
